@@ -14,19 +14,23 @@
 
 import os
 
-from ament_index_python.packages import get_package_share_directory
+from ament_index_python.packages import (
+    PackageNotFoundError,
+    get_package_share_directory,
+)
 
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     GroupAction,
     IncludeLaunchDescription,
+    LogInfo,
     SetEnvironmentVariable,
 )
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PythonExpression
-from launch_ros.actions import PushRosNamespace
+from launch_ros.actions import PushROSNamespace
 
 
 def generate_launch_description():
@@ -34,13 +38,17 @@ def generate_launch_description():
     bringup_dir = get_package_share_directory("nav2_bringup")
     launch_dir = os.path.join(bringup_dir, "launch")
 
-    # Get the launch directory of gmapping
-    slam_gmapping_dir = get_package_share_directory("slam_gmapping")
-    slam_gmapping_launch_dir = os.path.join(slam_gmapping_dir, "launch")
-
     # Get the launch directory of map_merge
     map_merge_dir = get_package_share_directory("multirobot_map_merge")
     map_merge_launch_dir = os.path.join(map_merge_dir, "launch", "tb3_simulation")
+
+    # slam_gmapping is optional: it has no Jazzy binaries and has to be built from source
+    try:
+        slam_gmapping_launch_dir = os.path.join(
+            get_package_share_directory("slam_gmapping"), "launch"
+        )
+    except PackageNotFoundError:
+        slam_gmapping_launch_dir = None
 
     # Create the launch configuration variables
     namespace = LaunchConfiguration("namespace")
@@ -80,7 +88,7 @@ def generate_launch_description():
     )
 
     declare_map_yaml_cmd = DeclareLaunchArgument(
-        "map", description="Full path to map yaml file to load"
+        "map", default_value="", description="Full path to map yaml file to load (slam:=False)"
     )
 
     declare_use_sim_time_cmd = DeclareLaunchArgument(
@@ -101,82 +109,74 @@ def generate_launch_description():
         description="Automatically startup the nav2 stack",
     )
 
+    run_slam_toolbox = PythonExpression(
+        [slam, " and ", slam_toolbox, " and not ", slam_gmapping]
+    )
+    run_slam_gmapping = PythonExpression(
+        [slam, " and ", slam_gmapping, " and not ", slam_toolbox]
+    )
+
     # Specify the actions
-    bringup_cmd_group = GroupAction(
+    slam_toolbox_cmd_group = GroupAction(
         [
-            PushRosNamespace(condition=IfCondition(use_namespace), namespace=namespace),
-            # IncludeLaunchDescription(
-            #     PythonLaunchDescriptionSource(
-            #         os.path.join(launch_dir, "slam_launch.py")
-            #     ),
-            #     condition=IfCondition(
-            #         PythonExpression(
-            #             [slam, " and ", slam_toolbox, " and not ", slam_gmapping]
-            #         )
-            #     ),
-            #     launch_arguments={
-            #         "namespace": namespace,
-            #         "use_sim_time": use_sim_time,
-            #         "autostart": autostart,
-            #         "params_file": params_file,
-            #     }.items(),
-            # ),
+            PushROSNamespace(condition=IfCondition(use_namespace), namespace=namespace),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
                     os.path.join(map_merge_launch_dir, "slam_toolbox.py")
                 ),
-                condition=IfCondition(
-                    PythonExpression(
-                        [slam, " and ", slam_toolbox, " and not ", slam_gmapping]
-                    )
-                ),
                 launch_arguments={
-                    "use_sim_time": use_sim_time,
-                }.items(),
-            ),
-            IncludeLaunchDescription(
-                PythonLaunchDescriptionSource(
-                    os.path.join(launch_dir, "localization_launch.py")
-                ),
-                condition=IfCondition(PythonExpression(["not ", slam])),
-                launch_arguments={
-                    "namespace": namespace,
-                    "map": map_yaml_file,
                     "use_sim_time": use_sim_time,
                     "autostart": autostart,
-                    "params_file": params_file,
-                    "use_lifecycle_mgr": "false",
                 }.items(),
             ),
+        ],
+        condition=IfCondition(run_slam_toolbox),
+    )
+
+    # Navigation only: SLAM runs above (or gmapping below), so nav2's own
+    # slam_launch.py / AMCL stay off. nav2_bringup pushes the namespace itself.
+    # Scoped group: the include writes its arguments into the launch context,
+    # and "slam" must not leak into the gmapping condition below.
+    navigation_cmd = GroupAction(
+        [
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
-                    os.path.join(launch_dir, "navigation_launch.py")
+                    os.path.join(launch_dir, "bringup_launch.py")
                 ),
-                launch_arguments={
-                    "namespace": namespace,
-                    "use_sim_time": use_sim_time,
-                    "autostart": autostart,
-                    "params_file": params_file,
-                    "use_lifecycle_mgr": "false",
-                    "map_subscribe_transient_local": "true",
-                }.items(),
+                # Arguments are evaluated in order: use_localization must read our
+                # "slam" before it is overwritten below.
+                launch_arguments=[
+                    ("use_localization", PythonExpression(["not ", slam])),
+                    ("slam", "False"),
+                    ("namespace", namespace),
+                    ("use_namespace", use_namespace),
+                    ("map", map_yaml_file),
+                    ("use_sim_time", use_sim_time),
+                    ("autostart", autostart),
+                    ("params_file", params_file),
+                ],
             ),
         ]
     )
-    # Not in GroupAction because namespace were prepended twice because
-    # slam_gmapping.launch.py already accepts a namespace argument
-    slam_gmapping_cmd = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(slam_gmapping_launch_dir, "slam_gmapping.launch.py")
-        ),
-        condition=IfCondition(
-            PythonExpression([slam, " and ", slam_gmapping, " and not ", slam_toolbox])
-        ),
-        launch_arguments={
-            "namespace": namespace,
-            "use_sim_time": use_sim_time,
-        }.items(),
-    )
+
+    if slam_gmapping_launch_dir is not None:
+        # Not in GroupAction because namespace were prepended twice because
+        # slam_gmapping.launch.py already accepts a namespace argument
+        slam_gmapping_cmd = IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                os.path.join(slam_gmapping_launch_dir, "slam_gmapping.launch.py")
+            ),
+            condition=IfCondition(run_slam_gmapping),
+            launch_arguments={
+                "namespace": namespace,
+                "use_sim_time": use_sim_time,
+            }.items(),
+        )
+    else:
+        slam_gmapping_cmd = LogInfo(
+            condition=IfCondition(run_slam_gmapping),
+            msg="slam_gmapping:=True but the slam_gmapping package was not found; no SLAM is running",
+        )
 
     # Create the launch description and populate
     ld = LaunchDescription()
@@ -196,7 +196,8 @@ def generate_launch_description():
     ld.add_action(declare_autostart_cmd)
 
     # Add the actions to launch all of the navigation nodes
-    ld.add_action(bringup_cmd_group)
+    ld.add_action(slam_toolbox_cmd_group)
+    ld.add_action(navigation_cmd)
     ld.add_action(slam_gmapping_cmd)
 
     return ld

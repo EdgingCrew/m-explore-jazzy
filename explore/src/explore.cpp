@@ -38,6 +38,7 @@
 
 #include <explore/explore.h>
 
+#include <cmath>
 #include <thread>
 
 inline static bool same_point(const geometry_msgs::msg::Point& one,
@@ -47,6 +48,24 @@ inline static bool same_point(const geometry_msgs::msg::Point& one,
   double dy = one.y - two.y;
   double dist = sqrt(dx * dx + dy * dy);
   return dist < 0.01;
+}
+
+// Navigation target for a frontier. Usually its centroid, but when the centroid
+// is closer to the robot than the frontier itself (e.g. a ring-shaped frontier
+// around a robot in open space), reaching it reveals nothing and the same goal
+// "succeeds" forever. Then go to the frontier's closest point instead.
+static geometry_msgs::msg::Point
+frontierGoal(const frontier_exploration::Frontier& frontier,
+             const geometry_msgs::msg::Point& robot)
+{
+  double dx = frontier.centroid.x - robot.x;
+  double dy = frontier.centroid.y - robot.y;
+  // min_distance stays infinite (middle unset) for single-cell frontiers
+  if (std::isfinite(frontier.min_distance) &&
+      sqrt(dx * dx + dy * dy) < frontier.min_distance) {
+    return frontier.middle;
+  }
+  return frontier.centroid;
 }
 
 namespace explore
@@ -154,7 +173,8 @@ void Explore::resumeCallback(const std_msgs::msg::Bool::SharedPtr msg)
 }
 
 void Explore::visualizeFrontiers(
-    const std::vector<frontier_exploration::Frontier>& frontiers)
+    const std::vector<frontier_exploration::Frontier>& frontiers,
+    const geometry_msgs::msg::Point& robot)
 {
   const auto blue = std_msgs::msg::ColorRGBA().set__b(1.0).set__a(0.5);
   const auto red = std_msgs::msg::ColorRGBA().set__r(1.0).set__a(0.5);
@@ -193,7 +213,7 @@ void Explore::visualizeFrontiers(
     m.scale.y = 0.1;
     m.scale.z = 0.1;
     m.points = frontier.points;
-    if (goalOnBlacklist(frontier.centroid)) {
+    if (goalOnBlacklist(frontierGoal(frontier, robot))) {
       m.color = red;
     } else {
       m.color = blue;
@@ -202,7 +222,7 @@ void Explore::visualizeFrontiers(
     ++id;
     m.type = visualization_msgs::msg::Marker::SPHERE;
     m.id = int(id);
-    m.pose.position = frontier.centroid;
+    m.pose.position = frontierGoal(frontier, robot);
     // scale frontier according to its cost (costier frontiers will be smaller)
     double scale = std::min(std::abs(min_cost * 0.4 / frontier.cost), 0.5);
     m.scale.x = scale;
@@ -248,14 +268,14 @@ void Explore::makePlan()
 
   // publish frontiers as visualization markers
   if (visualize_) {
-    visualizeFrontiers(frontiers);
+    visualizeFrontiers(frontiers, pose.position);
   }
 
   // find non blacklisted frontier
   auto frontier =
       std::find_if_not(frontiers.begin(), frontiers.end(),
-                       [this](const frontier_exploration::Frontier& f) {
-                         return goalOnBlacklist(f.centroid);
+                       [this, &pose](const frontier_exploration::Frontier& f) {
+                         return goalOnBlacklist(frontierGoal(f, pose.position));
                        });
   if (frontier == frontiers.end()) {
     RCLCPP_WARN(logger_, "All frontiers traversed/tried out, stopping.");
@@ -265,7 +285,8 @@ void Explore::makePlan()
     stop(true);
     return;
   }
-  geometry_msgs::msg::Point target_position = frontier->centroid;
+  geometry_msgs::msg::Point target_position =
+      frontierGoal(*frontier, pose.position);
 
   // time out if we are not making any progress
   bool same_goal = same_point(prev_goal_, target_position);
@@ -373,6 +394,18 @@ bool Explore::goalOnBlacklist(const geometry_msgs::msg::Point& goal)
   return false;
 }
 
+#ifdef NAV2_RESULT_HAS_ERROR_CODE
+bool Explore::isUnreachableGoalError(uint16_t error_code)
+{
+  // NavigateToPose forwards the error code of the failing BT node. Only planner
+  // errors that say the goal itself cannot be reached justify a blacklist.
+  using PlannerResult = nav2_msgs::action::ComputePathToPose::Result;
+  return error_code == PlannerResult::GOAL_OUTSIDE_MAP ||
+         error_code == PlannerResult::GOAL_OCCUPIED ||
+         error_code == PlannerResult::NO_VALID_PATH;
+}
+#endif
+
 void Explore::reachedGoal(const NavigationGoalHandle::WrappedResult& result,
                           const geometry_msgs::msg::Point& frontier_goal) {
   // discard stale callbacks from previously preempted goals
@@ -386,14 +419,24 @@ void Explore::reachedGoal(const NavigationGoalHandle::WrappedResult& result,
       RCLCPP_DEBUG(logger_, "Goal was successful");
       last_progress_ = this->now();
       prev_distance_ = 0;
+      // If the frontier is still there after reaching it, being there does not
+      // reveal it (e.g. goal already within the goal tolerance). Without this the
+      // same goal is sent and "succeeds" again forever.
+      frontier_blacklist_.push_back(frontier_goal);
       break;
     case rclcpp_action::ResultCode::ABORTED:
 #ifdef NAV2_RESULT_HAS_ERROR_CODE
-      if (result.result && result.result->error_code != 0) {
+      if (result.result && isUnreachableGoalError(result.result->error_code)) {
         RCLCPP_DEBUG(logger_, "Goal aborted with error_code=%d (%s) — blacklisting frontier",
                      result.result->error_code,
                      result.result->error_msg.c_str());
         frontier_blacklist_.push_back(frontier_goal);
+      } else if (result.result && result.result->error_code != 0) {
+        // Controller/TF failures are about the robot, not the frontier. Keep the
+        // frontier; progress_timeout blacklists it if the robot stays stuck.
+        RCLCPP_DEBUG(logger_, "Goal aborted with error_code=%d (%s) — not blacklisting frontier",
+                     result.result->error_code,
+                     result.result->error_msg.c_str());
       } else {
         RCLCPP_DEBUG(logger_, "Goal aborted with error_code=0 — likely a preemption, not blacklisting");
       }

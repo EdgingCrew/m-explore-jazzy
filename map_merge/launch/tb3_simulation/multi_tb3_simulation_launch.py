@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """
-Example for spawing multiple robots in Gazebo.
+Example for spawing multiple robots in Gazebo (gz sim).
 
 This is an example on how to create a launch file for spawning multiple robots into Gazebo
 and launch multiple instances of the navigation stack, each controlling one robot.
@@ -21,25 +21,35 @@ The robots co-exist on a shared environment and are controlled by independent na
 """
 
 import os
+from pathlib import Path
+import tempfile
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
+    AppendEnvironmentVariable,
     DeclareLaunchArgument,
     ExecuteProcess,
     GroupAction,
     IncludeLaunchDescription,
     LogInfo,
+    OpaqueFunction,
+    RegisterEventHandler,
 )
 from launch.conditions import IfCondition, UnlessCondition
+from launch.event_handlers import OnShutdown
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, TextSubstitution
+from launch_ros.actions import Node
 
 
 def generate_launch_description():
     # Get the launch directory
     bringup_dir = get_package_share_directory("nav2_bringup")
     launch_dir = os.path.join(bringup_dir, "launch")
+    sim_dir = get_package_share_directory("nav2_minimal_tb3_sim")
+    # turtlebot3_house model used by the default world
+    tb3_gazebo_dir = get_package_share_directory("turtlebot3_gazebo")
 
     # Get the launch directory for multirobot_map_merge where we have a modified launch files
     map_merge_dir = get_package_share_directory("multirobot_map_merge")
@@ -90,10 +100,11 @@ def generate_launch_description():
 
     # Simulation settings
     world = LaunchConfiguration("world")
-    simulator = LaunchConfiguration("simulator")
+    headless = LaunchConfiguration("headless")
 
     # On this example all robots are launched with the same settings
     map_yaml_file = LaunchConfiguration("map")
+    params_file = LaunchConfiguration("params_file")
 
     autostart = LaunchConfiguration("autostart")
     rviz_config_file = LaunchConfiguration("rviz_config")
@@ -111,36 +122,26 @@ def generate_launch_description():
     # Declare the launch arguments
     declare_world_cmd = DeclareLaunchArgument(
         "world",
-        default_value=os.path.join(launch_dir_map_merge, "worlds", "world_only.model"),
+        default_value=os.path.join(launch_dir_map_merge, "worlds", "tb3_house.sdf.xacro"),
         description="Full path to world file to load",
     )
 
-    declare_simulator_cmd = DeclareLaunchArgument(
-        "simulator",
-        default_value="gazebo",
-        description="The simulator to use (gazebo or gzserver)",
+    declare_headless_cmd = DeclareLaunchArgument(
+        "headless", default_value="False", description="Whether to skip the gz sim GUI"
     )
 
     declare_map_yaml_cmd = DeclareLaunchArgument(
         "map",
-        default_value=os.path.join(bringup_dir, "maps", "turtlebot3_world.yaml"),
-        description="Full path to map file to load",
+        default_value=os.path.join(bringup_dir, "maps", "tb3_sandbox.yaml"),
+        description="Full path to map file to load (only used without SLAM)",
     )
 
-    declare_robot1_params_file_cmd = DeclareLaunchArgument(
-        "robot1_params_file",
+    declare_params_file_cmd = DeclareLaunchArgument(
+        "params_file",
         default_value=os.path.join(
-            launch_dir_map_merge, "config", "nav2_multirobot_params_1.yaml"
+            launch_dir_map_merge, "config", "nav2_multirobot_params.yaml"
         ),
-        description="Full path to the ROS2 parameters file to use for robot1 launched nodes",
-    )
-
-    declare_robot2_params_file_cmd = DeclareLaunchArgument(
-        "robot2_params_file",
-        default_value=os.path.join(
-            launch_dir_map_merge, "config", "nav2_multirobot_params_2.yaml"
-        ),
-        description="Full path to the ROS2 parameters file to use for robot2 launched nodes",
+        description="Full path to the ROS2 parameters file to use for all robots",
     )
 
     declare_autostart_cmd = DeclareLaunchArgument(
@@ -176,29 +177,55 @@ def generate_launch_description():
         description="Whether run a SLAM gmapping",
     )
 
-    # Start Gazebo with plugin providing the robot spawing service
-    start_gazebo_cmd = ExecuteProcess(
-        cmd=[
-            simulator,
-            "--verbose",
-            "-s",
-            "libgazebo_ros_init.so",
-            "-s",
-            "libgazebo_ros_factory.so",
-            world,
-        ],
+    # gz sim only takes worlds as files, so the xacro output goes to a temporary file
+    world_sdf = tempfile.mktemp(prefix="map_merge_", suffix=".sdf")
+    world_sdf_xacro = ExecuteProcess(
+        cmd=["xacro", "-o", world_sdf, ["headless:=", headless], world]
+    )
+    start_gazebo_server_cmd = ExecuteProcess(
+        cmd=["gz", "sim", "-r", "-s", world_sdf],
         output="screen",
     )
+    start_gazebo_client_cmd = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(
+                get_package_share_directory("ros_gz_sim"), "launch", "gz_sim.launch.py"
+            )
+        ),
+        condition=UnlessCondition(headless),
+        launch_arguments={"gz_args": ["-v4 -g "]}.items(),
+    )
+    # The one /clock bridge; the robots' bridges leave it out
+    # (tb3_simulation/config/turtlebot3_waffle_bridge.yaml).
+    clock_bridge_cmd = Node(
+        package="ros_gz_bridge",
+        executable="parameter_bridge",
+        name="clock_bridge",
+        arguments=["/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock"],
+        output="screen",
+    )
+    remove_temp_sdf_file = RegisterEventHandler(
+        event_handler=OnShutdown(
+            on_shutdown=[OpaqueFunction(function=lambda _: os.remove(world_sdf))]
+        )
+    )
 
-    # Spawning is done only inside tb3_simulation_launch.py (spawn_entity), with poses passed
-    # below. Do not add separate spawn nodes here — that duplicated spawns and used default
-    # entity name turtlebot3_waffle twice, which made Gazebo fail.
+    set_env_vars_resources = [
+        AppendEnvironmentVariable("GZ_SIM_RESOURCE_PATH", os.path.join(sim_dir, "models")),
+        AppendEnvironmentVariable(
+            "GZ_SIM_RESOURCE_PATH", str(Path(sim_dir).parent.resolve())
+        ),
+        AppendEnvironmentVariable(
+            "GZ_SIM_RESOURCE_PATH", os.path.join(tb3_gazebo_dir, "models")
+        ),
+    ]
+
+    # Spawning is done only inside tb3_simulation_launch.py, with poses passed below.
 
     # Define commands for launching the navigation instances
     nav_instances_cmds = []
 
     def _tb3_launch_arguments(robot):
-        params_file = LaunchConfiguration(f"{robot['name']}_params_file")
         return {
             "namespace": robot["name"],
             "use_namespace": "True",
@@ -207,8 +234,6 @@ def generate_launch_description():
             "params_file": params_file,
             "autostart": autostart,
             "use_rviz": "False",
-            "use_simulator": "False",
-            "headless": "False",
             "slam": "True",
             "slam_toolbox": slam_toolbox,
             "slam_gmapping": slam_gmapping,
@@ -233,6 +258,7 @@ def generate_launch_description():
                     launch_arguments={
                         "namespace": TextSubstitution(text=robot_known["name"]),
                         "use_namespace": "True",
+                        "use_sim_time": "True",
                         "rviz_config": rviz_config_file,
                     }.items(),
                 ),
@@ -254,34 +280,6 @@ def generate_launch_description():
                     condition=IfCondition(log_settings),
                     msg=["Launching ", robot_known["name"]],
                 ),
-                LogInfo(
-                    condition=IfCondition(log_settings),
-                    msg=[robot_known["name"], " map yaml: ", map_yaml_file],
-                ),
-                LogInfo(
-                    condition=IfCondition(log_settings),
-                    msg=[
-                        robot_known["name"],
-                        " params yaml: ",
-                        LaunchConfiguration(f"{robot_known['name']}_params_file"),
-                    ],
-                ),
-                LogInfo(
-                    condition=IfCondition(log_settings),
-                    msg=[robot_known["name"], " rviz config file: ", rviz_config_file],
-                ),
-                LogInfo(
-                    condition=IfCondition(log_settings),
-                    msg=[
-                        robot_known["name"],
-                        " using robot state pub: ",
-                        use_robot_state_pub,
-                    ],
-                ),
-                LogInfo(
-                    condition=IfCondition(log_settings),
-                    msg=[robot_known["name"], " autostart: ", autostart],
-                ),
             ]
         )
 
@@ -290,12 +288,14 @@ def generate_launch_description():
     # Create the launch description and populate
     ld = LaunchDescription()
 
+    for set_env_var in set_env_vars_resources:
+        ld.add_action(set_env_var)
+
     # Declare the launch options
-    ld.add_action(declare_simulator_cmd)
     ld.add_action(declare_world_cmd)
+    ld.add_action(declare_headless_cmd)
     ld.add_action(declare_map_yaml_cmd)
-    ld.add_action(declare_robot1_params_file_cmd)
-    ld.add_action(declare_robot2_params_file_cmd)
+    ld.add_action(declare_params_file_cmd)
     ld.add_action(declare_use_rviz_cmd)
     ld.add_action(declare_autostart_cmd)
     ld.add_action(declare_rviz_config_file_cmd)
@@ -305,7 +305,14 @@ def generate_launch_description():
     ld.add_action(declare_known_init_poses_cmd)
 
     # Add the actions to start gazebo, robots and simulations
-    ld.add_action(start_gazebo_cmd)
+    ld.add_action(world_sdf_xacro)
+    ld.add_action(start_gazebo_server_cmd)
+    ld.add_action(clock_bridge_cmd)
+    ld.add_action(start_gazebo_client_cmd)
+    ld.add_action(remove_temp_sdf_file)
+
+    ld.add_action(LogInfo(condition=IfCondition(log_settings), msg=["params yaml: ", params_file]))
+    ld.add_action(LogInfo(condition=IfCondition(log_settings), msg=["autostart: ", autostart]))
 
     for simulation_instance_cmd in nav_instances_cmds:
         ld.add_action(simulation_instance_cmd)

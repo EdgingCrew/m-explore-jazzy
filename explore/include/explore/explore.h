@@ -53,6 +53,7 @@
 #include <string>
 #include <visualization_msgs/msg/marker_array.hpp>
 
+#include "nav2_msgs/action/compute_path_to_pose.hpp"
 #include "nav2_msgs/action/navigate_to_pose.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
 
@@ -94,9 +95,14 @@ private:
   //  * @brief  Publish a frontiers as markers
   //  */
   void visualizeFrontiers(
-      const std::vector<frontier_exploration::Frontier>& frontiers);
+      const std::vector<frontier_exploration::Frontier>& frontiers,
+      const geometry_msgs::msg::Point& robot);
 
   bool goalOnBlacklist(const geometry_msgs::msg::Point& goal);
+
+#ifdef NAV2_RESULT_HAS_ERROR_CODE
+  static bool isUnreachableGoalError(uint16_t error_code);
+#endif
 
   NavigationGoalHandle::SharedPtr navigation_goal_handle_;
   // void

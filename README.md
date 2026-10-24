@@ -50,8 +50,11 @@ Then just run the nav2 stack with slam:
 ```
 export TURTLEBOT3_MODEL=waffle
 export GAZEBO_MODEL_PATH=$GAZEBO_MODEL_PATH:/opt/ros/${ROS_DISTRO}/share/turtlebot3_gazebo/models
-ros2 launch nav2_bringup tb3_simulation_launch.py slam:=True
+ros2 launch nav2_bringup tb3_simulation_launch.py slam:=True headless:=True \
+  params_file:=$(ros2 pkg prefix explore_lite)/share/explore_lite/config/nav2_params_tb3_sim.yaml
 ```
+
+`nav2_params_tb3_sim.yaml` is the stock nav2_bringup params file tuned for exploration (relaxed collision monitor, higher TF tolerances, lighter MPPI). With the default params the robot tends to get stuck next to obstacles. Drop `headless:=True` to see the Gazebo GUI.
 
 And run this package with
 ```
@@ -122,9 +125,12 @@ https://user-images.githubusercontent.com/8033598/144522696-517d54fd-74d0-4c55-9
 
 ### ROS2 requirements
 
-#### SLAM
-Because of the logic that merges the maps, currently as a straightforward port to ROS2 from the ROS1 version, the SLAM needs to be done using the ROS1 defacto slam option which is [slam_gmapping](https://github.com/ros-perception/slam_gmapping), which hasn't been ported officially to ROS2 yet. There is an unofficial port but it lacks to pass a namespace to its launch file. For that, this repo was tested with one of the authors of this package's [fork](https://github.com/charlielito/slam_gmapping/tree/feature/namespace_launch). You'll need to git clone to your workspace and build it with colcon.
+The TB3 simulation launch files in `map_merge/launch/tb3_simulation` target **ROS 2 Jazzy** with Gazebo (gz sim), `nav2_bringup` and `nav2_minimal_tb3_sim`. The default world is `turtlebot3_house`, whose model comes from `turtlebot3_gazebo` (Jazzy branch of [turtlebot3_simulations](https://github.com/ROBOTIS-GIT/turtlebot3_simulations); with the pixi workspace: `pixi run import && pixi run build`).
 
+#### SLAM
+[slam_toolbox](https://github.com/SteveMacenski/slam_toolbox) is available as a binary and is the recommended SLAM; see [slam_toolbox: parameters, simulation vs real world](#slam_toolbox-parameters-simulation-vs-real-world) for merge settings.
+
+The original ROS1 merge logic was built for [slam_gmapping](https://github.com/ros-perception/slam_gmapping), which hasn't been ported officially to ROS2. There is an unofficial port but it lacks to pass a namespace to its launch file. For that, this repo was tested with one of the authors of this package's [fork](https://github.com/charlielito/slam_gmapping/tree/feature/namespace_launch). To use it, git clone it to your workspace and build it with colcon:
 
 ```
 cd <your/ros2_ws/src>
@@ -133,15 +139,13 @@ cd ..
 colcon build --symlink-install --packages-up-to slam_gmapping
 ```
 
-**Note**: You can use [slam_toolbox](https://github.com/SteveMacenski/slam_toolbox) instead of gmapping; see [slam_toolbox: parameters, simulation vs real world](#slam_toolbox-parameters-simulation-vs-real-world) for merge settings.
-
 ### Running the demo with TB3
-First, you'll need to launch the whole simulation stack, nav2 stacks and slam stacks per robot. For that just launch::
+First, you'll need to launch the whole simulation stack, nav2 stacks and slam stacks per robot. For that just launch:
 ```
-export TURTLEBOT3_MODEL=waffle
-export GAZEBO_MODEL_PATH=$GAZEBO_MODEL_PATH:/opt/ros/${ROS_DISTRO}/share/turtlebot3_gazebo/models
-ros2 launch multirobot_map_merge multi_tb3_simulation_launch.py slam_gmapping:=True
+ros2 launch multirobot_map_merge multi_tb3_simulation_launch.py slam_toolbox:=True
 ```
+Each robot runs in its own namespace (`/robot1`, `/robot2`) with its own TF tree, slam_toolbox and nav2 (parameters: `tb3_simulation/config/nav2_multirobot_params.yaml`, shared by all robots). Use `headless:=True` to skip the Gazebo GUI and `use_rviz:=False` to skip the per-robot rviz2 windows. For gmapping use `slam_gmapping:=True` instead of `slam_toolbox:=True`.
+
 Now run the merging node:
 ```
 ros2 launch multirobot_map_merge map_merge.launch.py
@@ -149,12 +153,17 @@ ros2 launch multirobot_map_merge map_merge.launch.py
 
 By default, the demo runs with known initial poses. You can change that by launching again both launch commands with the flag `known_init_poses:=False`
 
-Then you can start moving each robot with its corresponding rviz2 interface by sending nav2 goals. To see the map merged just launch rviz2:
+To explore autonomously, start explore_lite for each robot:
+```
+ros2 launch explore_lite explore.launch.py namespace:=robot1
+ros2 launch explore_lite explore.launch.py namespace:=robot2
+```
+Each robot explores its own map, so the robots don't coordinate.
+
+Or move each robot with its corresponding rviz2 interface by sending nav2 goals. To see the map merged just launch rviz2:
 ```
 rviz2 -d <your/ros2_ws>/src/m-explore-ros2/map_merge/launch/map_merge.rviz
 ```
-
-**Note**: To use slam_toolbox, launch `multirobot_map_merge` with `slam_toolbox:=True` (instead of `slam_gmapping:=True`) and configure the merge node as in the [slam_toolbox section](#slam_toolbox-parameters-simulation-vs-real-world).
 
 WIKI
 ----
