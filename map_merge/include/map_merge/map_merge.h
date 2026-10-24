@@ -59,6 +59,8 @@ struct MapSubscription {
   // also protects reads and writes of shared_ptrs
   std::mutex mutex;
 
+  /** e.g. "robot1" — used for stable merge order (forward_list iterates newest-first). */
+  std::string robot_name;
   geometry_msgs::msg::Transform initial_pose;
   nav_msgs::msg::OccupancyGrid::SharedPtr writable_map;
   nav_msgs::msg::OccupancyGrid::ConstSharedPtr readonly_map;
@@ -82,6 +84,12 @@ private:
   std::string robot_namespace_;
   std::string world_frame_;
   bool have_initial_poses_;
+  /** Like gingineer map_expansion: embed each SLAM map in one shared canvas using origins only (no TF between maps). */
+  bool expand_slam_maps_to_common_canvas_;
+  double expand_slam_maps_margin_m_;
+  /** If true (with expansion on), place each map by its init_pose_* (pose of the robot's map frame relative to the
+   * first robot's). If false, all map frames are assumed to coincide. */
+  bool expand_slam_maps_apply_init_pose_;
 
   // publishing
   rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr merged_map_publisher_;
@@ -106,10 +114,16 @@ private:
   bool isRobotMapTopic(const std::string topic, std::string type);
   bool getInitPose(const std::string& name, geometry_msgs::msg::Transform& pose);
 
-  void fullMapUpdate(const nav_msgs::msg::OccupancyGrid::SharedPtr msg,
-                     MapSubscription& map);
+  void fullMapUpdate(const nav_msgs::msg::OccupancyGrid::SharedPtr msg, MapSubscription& map,
+                     const std::string& robot_name);
   void partialMapUpdate(const map_msgs::msg::OccupancyGridUpdate::SharedPtr msg,
                         MapSubscription& map);
+
+  /** slam_toolbox: expand each map to identical width/height/origin (issue #10 / gingineer).
+   * map_poses[i] is the pose of in[i]'s map frame in the merge frame (init_pose_* or identity). */
+  bool expandSlamMapsToCommonCanvas(const std::vector<nav_msgs::msg::OccupancyGrid::ConstSharedPtr>& in,
+                                  const std::vector<geometry_msgs::msg::Transform>& map_poses,
+                                  std::vector<nav_msgs::msg::OccupancyGrid::ConstSharedPtr>& out);
 
 public:
   MapMerge();

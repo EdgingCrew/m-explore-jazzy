@@ -9,6 +9,7 @@ ROS2 package port for multi-robot autonomous exploration of [m-explore](https://
     * [Instructions for the simulation demo](#Running-the-explore-demo-with-TB3)    
 2. [Multirobot map merge](#Multirobot-map-merge)
     * [Simulation demo with known initial poses](#Known-initial-poses)
+    * [slam_toolbox: parameters, simulation vs real world](#slam_toolbox-parameters-simulation-vs-real-world)
     * [Simulation demo with unknown initial poses](#Unknown-initial-poses)
     * [ROS2 requirements](#ROS2-requirements)
     * [Instructions for simulation demos](#Running-the-demo-with-TB3)
@@ -94,6 +95,25 @@ We also support using [slam_toolbox](https://github.com/SteveMacenski/slam_toolb
 
 https://user-images.githubusercontent.com/8033598/170846935-cfae9f3f-5edd-43ea-b993-7b3ba1db921b.mp4
 
+### slam_toolbox: parameters, simulation vs real world
+
+[slam_toolbox](https://github.com/SteveMacenski/slam_toolbox) publishes `/map` topics whose **width, height, and `info.origin` change over time**, unlike classic [slam_gmapping](https://github.com/ros-perception/slam_gmapping) maps that match the older merge assumptions more closely. The merge node therefore supports extra options (see `map_merge/config/params.yaml`). Below, **expansion** means embedding each robot’s occupancy grid into **one shared canvas** (same resolution, width, height, and origin) using only each message’s `OccupancyGrid.info`, similar in spirit to [this map-expansion approach](https://github.com/gingineer95/Multi-Robot-Exploration-and-Map-Merging/blob/main/src/map_expansion.cpp) and [issue #10](https://github.com/robo-friends/m-explore-ros2/issues/10).
+
+| Parameter | Meaning |
+|-----------|---------|
+| `expand_slam_maps_to_common_canvas` | **Recommended `true` for slam_toolbox.** Resamples every robot map into a **common grid** so the OpenCV merge sees equal-sized layers. **`false`** falls back to the legacy path (better matched to **gmapping**-style stable maps); with slam_toolbox alone it often looks wrong. |
+| `expand_slam_maps_margin_m` | Extra margin (meters) around the union bounding box when building the shared canvas. |
+| `expand_slam_maps_apply_init_pose` | Only relevant when **expansion is on**. If **`true`** (default), each robot map is placed on the canvas by its **`init_pose_*`** (x, y, yaw; the rotation pivots about that robot's map origin). If **`false`**, all robot map frames are assumed to **coincide** and `init_pose_*` is ignored. |
+| `known_init_poses` | When **`true`**, each robot must declare `map_merge/init_pose_*` parameters so the node can register robots (see `params.yaml`). |
+| `/robotN/map_merge/init_pose_x` … `init_pose_yaw` | Pose of robot **N**'s map frame relative to robot **1**'s, which for slam_toolbox is robot N's **start pose** relative to robot 1's: robot **1** is `(0,0,0)`, robot **2+** are **relative** offsets (meters and yaw in radians). |
+| `world_frame` | `frame_id` published on the merged map. Set this to a frame that **exists** in your TF tree for RViz (e.g. a namespaced `map`); a non-existent frame (such as `world` if you never publish it) can make the merged map awkward to visualize. |
+
+**Why `init_pose_*` is needed**  
+Each slam_toolbox instance starts its `map` frame at its robot's **start pose**, so two maps of the same building are offset by the robots' relative start poses. This holds for real robots and for the Jazzy gz simulation (odometry starts at zero at each spawn pose). Keep **`expand_slam_maps_apply_init_pose: true`** and set **`init_pose_*`** to the start offsets: the spawn poses in simulation (`params.yaml` matches the known-poses spawns of `multi_tb3_simulation_launch.py`), or measured offsets on real robots (robot 1 at the origin of one chosen floor reference, others at measured Δx, Δy, yaw). Use **`false`** only if all robots' map frames already share one origin (e.g. odometry published in a common world frame).
+
+**gmapping vs slam_toolbox (quick)**  
+- **gmapping:** often works with **`expand_slam_maps_to_common_canvas: false`** and **`init_pose_*`** only (classic behavior).  
+- **slam_toolbox:** use **`expand_slam_maps_to_common_canvas: true`** and **`expand_slam_maps_apply_init_pose: true`** with the robots' start offsets.
 
 ### Unknown initial poses 
 It works better if the robots start very close (< 3 meters) to each other so their relative positions can be calculated properly.
@@ -113,7 +133,7 @@ cd ..
 colcon build --symlink-install --packages-up-to slam_gmapping
 ```
 
-**Note**: You could use [slam_toolbox](https://github.com/SteveMacenski/slam_toolbox) instead but you need to use this [experimental branch](https://github.com/robo-friends/m-explore-ros2/tree/feature/slam_toolbox_compat) which is still under development.
+**Note**: You can use [slam_toolbox](https://github.com/SteveMacenski/slam_toolbox) instead of gmapping; see [slam_toolbox: parameters, simulation vs real world](#slam_toolbox-parameters-simulation-vs-real-world) for merge settings.
 
 ### Running the demo with TB3
 First, you'll need to launch the whole simulation stack, nav2 stacks and slam stacks per robot. For that just launch::
@@ -134,7 +154,7 @@ Then you can start moving each robot with its corresponding rviz2 interface by s
 rviz2 -d <your/ros2_ws>/src/m-explore-ros2/map_merge/launch/map_merge.rviz
 ```
 
-**Note**: If you want to use slam_toolbox, launch `multirobot_map_merge` with the following flag instead: `slam_toolbox:=True`. Remember to use the experimental branch mentioned above.
+**Note**: To use slam_toolbox, launch `multirobot_map_merge` with `slam_toolbox:=True` (instead of `slam_gmapping:=True`) and configure the merge node as in the [slam_toolbox section](#slam_toolbox-parameters-simulation-vs-real-world).
 
 WIKI
 ----

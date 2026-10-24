@@ -1,3 +1,12 @@
 *sublime-*
 *.svg
 *.xcf
+# pixi environments
+.pixi/*
+!.pixi/config.toml
+# colcon workspace artifacts
+build/
+install/
+log/
+# turtlebot3 sources, fetched with `pixi run import` (see turtle.repos)
+turtle/src/

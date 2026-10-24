@@ -1,7 +1,15 @@
 map_merge:
   ros__parameters:
+    # Full documentation: README.md → "slam_toolbox: parameters, simulation vs real world"
+    # slam_toolbox: embed each /map into one shared grid (gingineer / issue #10).
+    # Set false to use init_pose_* like classic gmapping (unequal slam_toolbox grids may look wrong).
+    expand_slam_maps_to_common_canvas: true
+    expand_slam_maps_margin_m: 1.0
+    # With expansion on: true = place each map by init_pose_* (each slam_toolbox map frame starts at its
+    # robot's start pose, as in the Jazzy gz simulation). false = assume all map frames coincide.
+    expand_slam_maps_apply_init_pose: true
     merging_rate: 4.0
-    discovery_rate: 0.05
+    discovery_rate: 0.5
     estimation_rate: 0.5
     estimation_confidence: 0.6
     robot_map_topic: map
@@ -12,13 +20,15 @@ map_merge:
     known_init_poses: true
     # known_init_poses: false
 
-    # Define here robots' positions in the map if known_init_poses is true
+    # Define here robots' positions in the map if known_init_poses is true:
+    # start pose of each robot relative to robot1 (meters, yaw in radians)
     /robot1/map_merge/init_pose_x: 0.0
     /robot1/map_merge/init_pose_y: 0.0
     /robot1/map_merge/init_pose_z: 0.0
     /robot1/map_merge/init_pose_yaw: 0.0
 
     /robot2/map_merge/init_pose_x: -3.0
+    # Relative offset vs robot1: spawn delta in Y is 1.5 - 0.5 = 1.0 m
     /robot2/map_merge/init_pose_y: 1.0
     /robot2/map_merge/init_pose_z: 0.0
     /robot2/map_merge/init_pose_yaw: 0.0
