@@ -17,6 +17,14 @@ map_merge:
     robot_namespace: ""
     merged_map_topic: map
     world_frame: world
+    # add world_frame -> map to each robot's TF tree (/robotN/tf_static), so the robots
+    # can use the merged map (explore_lite config/params_multirobot.yaml)
+    publish_robot_map_tf: true
+    robot_map_frame: map
+    # also publish /robotN/merged_map: merged map with the robot's own map on top, so a robot
+    # that other robots mapped as an obstacle isn't standing inside it when planning
+    publish_robot_maps: true
+    robot_merged_map_topic: merged_map
     known_init_poses: true
     # known_init_poses: false
 

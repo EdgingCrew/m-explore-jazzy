@@ -12,4 +12,6 @@
     gain_scale: 1.0
     transform_tolerance: 0.3
     min_frontier_size: 0.3
+    # keep looking for this long (s) before finishing when no frontier is left
+    completion_timeout: 20.0
     use_sim_time: true

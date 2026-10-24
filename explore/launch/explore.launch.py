@@ -10,14 +10,20 @@ from launch.substitutions import LaunchConfiguration
 
 def generate_launch_description():
     ld = LaunchDescription()
-    config = os.path.join(
-        get_package_share_directory("explore_lite"), "config", "params.yaml"
-    )
+    config = LaunchConfiguration("params_file")
     use_sim_time = LaunchConfiguration("use_sim_time")
     namespace = LaunchConfiguration("namespace")
 
     declare_use_sim_time_argument = DeclareLaunchArgument(
         "use_sim_time", default_value="true", description="Use simulation/Gazebo clock"
+    )
+    declare_params_file_argument = DeclareLaunchArgument(
+        "params_file",
+        default_value=os.path.join(
+            get_package_share_directory("explore_lite"), "config", "params.yaml"
+        ),
+        description="Full path to the explore_lite parameters file "
+        "(config/params_multirobot.yaml: explore the merged map together)",
     )
     declare_namespace_argument = DeclareLaunchArgument(
         "namespace",
@@ -42,5 +48,6 @@ def generate_launch_description():
     )
     ld.add_action(declare_use_sim_time_argument)
     ld.add_action(declare_namespace_argument)
+    ld.add_action(declare_params_file_argument)
     ld.add_action(node)
     return ld

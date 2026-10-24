@@ -39,8 +39,9 @@ from launch.actions import (
 from launch.conditions import IfCondition, UnlessCondition
 from launch.event_handlers import OnShutdown
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, TextSubstitution
+from launch.substitutions import LaunchConfiguration, PythonExpression, TextSubstitution
 from launch_ros.actions import Node
+from nav2_common.launch import RewrittenYaml
 
 
 def generate_launch_description():
@@ -166,6 +167,49 @@ def generate_launch_description():
         "use_rviz", default_value="True", description="Whether to start RVIZ"
     )
 
+    use_merged_map = LaunchConfiguration("use_merged_map")
+    declare_use_merged_map_cmd = DeclareLaunchArgument(
+        "use_merged_map",
+        default_value="False",
+        description="Plan on map_merge's merged map: run map_merge and switch every robot's "
+        "global costmap to its <robot>/merged_map in frame world, so robots can drive to frontiers only "
+        "another robot has seen (explore_lite config/params_multirobot.yaml). "
+        "Needs known_init_poses.",
+    )
+    # Nav2's static layer copies a map 1:1 into a non-rolling costmap, so the global
+    # costmap frame has to be the merged map's frame (map_merge world_frame).
+    # map_merge adds world -> map to each robot's TF tree.
+    configured_params = RewrittenYaml(
+        source_file=params_file,
+        param_rewrites={
+            "global_costmap.global_costmap.ros__parameters.global_frame": PythonExpression(
+                ["'world' if ", use_merged_map, " else 'map'"]
+            ),
+            # The robot's merged map (own map on top): on the plain merged map a robot
+            # stands inside the obstacle other robots mapped it as. Not plain 'map'
+            # when set explicitly, that resolves inside the costmap's namespace
+            # (<robot>/global_costmap/map). nav2_bringup replaces <robot_namespace>
+            # as for the scan topics.
+            "global_costmap.global_costmap.ros__parameters.static_layer.map_topic": (
+                PythonExpression(
+                    [
+                        "'<robot_namespace>/merged_map' if ",
+                        use_merged_map,
+                        " else '<robot_namespace>/map'",
+                    ]
+                )
+            ),
+        },
+        convert_types=True,
+    )
+    start_map_merge_cmd = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(map_merge_dir, "launch", "map_merge.launch.py")
+        ),
+        condition=IfCondition(use_merged_map),
+        launch_arguments={"known_init_poses": known_init_poses}.items(),
+    )
+
     slam_toolbox = LaunchConfiguration("slam_toolbox")
     slam_gmapping = LaunchConfiguration("slam_gmapping")
     declare_slam_toolbox_cmd = DeclareLaunchArgument(
@@ -231,7 +275,7 @@ def generate_launch_description():
             "use_namespace": "True",
             "map": map_yaml_file,
             "use_sim_time": "True",
-            "params_file": params_file,
+            "params_file": configured_params,
             "autostart": autostart,
             "use_rviz": "False",
             "slam": "True",
@@ -303,6 +347,7 @@ def generate_launch_description():
     ld.add_action(declare_slam_toolbox_cmd)
     ld.add_action(declare_slam_gmapping_cmd)
     ld.add_action(declare_known_init_poses_cmd)
+    ld.add_action(declare_use_merged_map_cmd)
 
     # Add the actions to start gazebo, robots and simulations
     ld.add_action(world_sdf_xacro)
@@ -310,6 +355,7 @@ def generate_launch_description():
     ld.add_action(clock_bridge_cmd)
     ld.add_action(start_gazebo_client_cmd)
     ld.add_action(remove_temp_sdf_file)
+    ld.add_action(start_map_merge_cmd)
 
     ld.add_action(LogInfo(condition=IfCondition(log_settings), msg=["params yaml: ", params_file]))
     ld.add_action(LogInfo(condition=IfCondition(log_settings), msg=["autostart: ", autostart]))

@@ -49,6 +49,7 @@
 #include <map_msgs/msg/occupancy_grid_update.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <tf2_msgs/msg/tf_message.hpp>
 
 #include <boost/thread.hpp>
 
@@ -69,6 +70,10 @@ struct MapSubscription {
   // ros::Subscriber map_updates_sub;
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub;
   rclcpp::Subscription<map_msgs::msg::OccupancyGridUpdate>::SharedPtr map_updates_sub;
+  // world_frame -> robot map frame, latched on the robot's own TF tree
+  rclcpp::Publisher<tf2_msgs::msg::TFMessage>::SharedPtr tf_static_pub;
+  // merged map with this robot's own map on top (publish_robot_maps)
+  rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr robot_merged_map_pub;
 };
 
 class MapMerge : public rclcpp::Node
@@ -90,6 +95,15 @@ private:
   /** If true (with expansion on), place each map by its init_pose_* (pose of the robot's map frame relative to the
    * first robot's). If false, all map frames are assumed to coincide. */
   bool expand_slam_maps_apply_init_pose_;
+  /** Publish world_frame -> robot_map_frame on each robot's <robot>/tf_static (expansion with known poses
+   * only), so robots can use the merged map, e.g. for exploring global frontiers. */
+  bool publish_robot_map_tf_;
+  std::string robot_map_frame_;
+  /** Also publish <robot>/<robot_merged_map_topic>: the merged map where each robot's own map wins wherever
+   * it knows a cell. Other robots map a robot as an obstacle; planning on the plain merged map, it would
+   * stand inside its own obstacle. */
+  bool publish_robot_maps_;
+  std::string robot_merged_map_topic_;
 
   // publishing
   rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr merged_map_publisher_;
@@ -113,6 +127,10 @@ private:
   // bool isRobotMapTopic(const ros::master::TopicInfo& topic);
   bool isRobotMapTopic(const std::string topic, std::string type);
   bool getInitPose(const std::string& name, geometry_msgs::msg::Transform& pose);
+  void publishRobotMapTf(MapSubscription& subscription);
+  void publishRobotMaps(const nav_msgs::msg::OccupancyGrid& merged,
+                        const std::vector<nav_msgs::msg::OccupancyGrid::ConstSharedPtr>& own_maps,
+                        const std::vector<MapSubscription*>& robots);
 
   void fullMapUpdate(const nav_msgs::msg::OccupancyGrid::SharedPtr msg, MapSubscription& map,
                      const std::string& robot_name);

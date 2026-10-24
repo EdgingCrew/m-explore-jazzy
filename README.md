@@ -160,6 +160,20 @@ ros2 launch explore_lite explore.launch.py namespace:=robot2
 ```
 Each robot explores its own map, so the robots don't coordinate.
 
+#### Exploring together on the merged map
+To let the robots explore the **global** frontiers of the merged map and spread out, launch the simulation with `use_merged_map:=True` (it also starts the merging node) and explore_lite with `params_multirobot.yaml`:
+```
+ros2 launch multirobot_map_merge multi_tb3_simulation_launch.py slam_toolbox:=True use_merged_map:=True
+ros2 launch explore_lite explore.launch.py namespace:=robot1 params_file:=$(ros2 pkg prefix explore_lite)/share/explore_lite/config/params_multirobot.yaml
+ros2 launch explore_lite explore.launch.py namespace:=robot2 params_file:=$(ros2 pkg prefix explore_lite)/share/explore_lite/config/params_multirobot.yaml
+```
+How it fits together:
+- map_merge places the merged `/map` in its `world_frame` by `init_pose_*` and, with `publish_robot_map_tf`, adds `world -> map` to every robot's TF tree (`/robotN/tf_static`). This needs `known_init_poses` and `expand_slam_maps_to_common_canvas`.
+- With `publish_robot_maps`, map_merge also publishes `/robotN/merged_map`: the merged map with that robot's own map on top. Other robots map a robot as an obstacle; on the plain merged map it would stand inside that obstacle and fail to plan.
+- Each robot's nav2 global costmap uses its merged map (`global_frame: world`, static layer on `/robotN/merged_map`), so a robot can plan to frontiers only another robot has seen.
+- explore_lite searches frontiers on the robot's merged map and shares its current goal on `/explore/robot_goals`. A frontier within `coordination_radius` of another robot's goal is left to that robot, and `coordination_scale` makes frontiers far from the other robots' goals cheaper. A robot keeps its frontier while it exists and isn't claimed; if two robots pick the same one, the one with the smaller node name keeps it.
+- `completion_timeout` keeps a robot looking for a while before it finishes, since a frontier can be hidden temporarily (e.g. another robot standing in a doorway is mapped as an obstacle).
+
 Or move each robot with its corresponding rviz2 interface by sending nav2 goals. To see the map merged just launch rviz2:
 ```
 rviz2 -d <your/ros2_ws>/src/m-explore-ros2/map_merge/launch/map_merge.rviz

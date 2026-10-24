@@ -10,15 +10,20 @@ from launch.substitutions import LaunchConfiguration
 
 def generate_launch_description():
     ld = LaunchDescription()
-    config = os.path.join(
-        get_package_share_directory("multirobot_map_merge"), "config", "params.yaml"
-    )
+    config = LaunchConfiguration("params_file")
     use_sim_time = LaunchConfiguration("use_sim_time")
     namespace = LaunchConfiguration("namespace")
     known_init_poses = LaunchConfiguration("known_init_poses")
 
     declare_use_sim_time_argument = DeclareLaunchArgument(
         "use_sim_time", default_value="true", description="Use simulation/Gazebo clock"
+    )
+    declare_params_file_argument = DeclareLaunchArgument(
+        "params_file",
+        default_value=os.path.join(
+            get_package_share_directory("multirobot_map_merge"), "config", "params.yaml"
+        ),
+        description="Full path to the map_merge parameters file (robots' init_pose_* etc.)",
     )
     declare_namespace_argument = DeclareLaunchArgument(
         "namespace",
@@ -53,5 +58,6 @@ def generate_launch_description():
     ld.add_action(declare_use_sim_time_argument)
     ld.add_action(declare_known_init_poses_argument)
     ld.add_action(declare_namespace_argument)
+    ld.add_action(declare_params_file_argument)
     ld.add_action(node)
     return ld

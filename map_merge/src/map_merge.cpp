@@ -49,6 +49,7 @@
 #include <rcpputils/asserts.hpp>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2/LinearMath/Transform.h>
+#include <geometry_msgs/msg/transform_stamped.hpp>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
 namespace
@@ -83,6 +84,8 @@ MapMerge::MapMerge() : Node("map_merge", rclcpp::NodeOptions()
                        expand_slam_maps_to_common_canvas_(true),
                        expand_slam_maps_margin_m_(1.0),
                        expand_slam_maps_apply_init_pose_(true),
+                       publish_robot_map_tf_(false),
+                       publish_robot_maps_(false),
                        subscriptions_size_(0),
                        logger_(this->get_logger())
 {
@@ -108,6 +111,18 @@ MapMerge::MapMerge() : Node("map_merge", rclcpp::NodeOptions()
   if (!this->has_parameter("expand_slam_maps_apply_init_pose")) {
     this->declare_parameter<bool>("expand_slam_maps_apply_init_pose", true);
   }
+  if (!this->has_parameter("publish_robot_map_tf")) {
+    this->declare_parameter<bool>("publish_robot_map_tf", false);
+  }
+  if (!this->has_parameter("robot_map_frame")) {
+    this->declare_parameter<std::string>("robot_map_frame", "map");
+  }
+  if (!this->has_parameter("publish_robot_maps")) {
+    this->declare_parameter<bool>("publish_robot_maps", false);
+  }
+  if (!this->has_parameter("robot_merged_map_topic")) {
+    this->declare_parameter<std::string>("robot_merged_map_topic", "merged_map");
+  }
 
   this->get_parameter("merging_rate", merging_rate_);
   this->get_parameter("discovery_rate", discovery_rate_);
@@ -122,6 +137,10 @@ MapMerge::MapMerge() : Node("map_merge", rclcpp::NodeOptions()
   this->get_parameter("expand_slam_maps_to_common_canvas", expand_slam_maps_to_common_canvas_);
   this->get_parameter("expand_slam_maps_margin_m", expand_slam_maps_margin_m_);
   this->get_parameter("expand_slam_maps_apply_init_pose", expand_slam_maps_apply_init_pose_);
+  this->get_parameter("publish_robot_map_tf", publish_robot_map_tf_);
+  this->get_parameter("robot_map_frame", robot_map_frame_);
+  this->get_parameter("publish_robot_maps", publish_robot_maps_);
+  this->get_parameter("robot_merged_map_topic", robot_merged_map_topic_);
 
   /* publishing */
   // Create a publisher using the QoS settings to emulate a ROS1 latched topic
@@ -238,6 +257,18 @@ void MapMerge::topicSubscribing()
                   const map_msgs::msg::OccupancyGridUpdate::SharedPtr msg) {
                 partialMapUpdate(msg, subscription);
               });
+
+      // only the expansion path places the merged map in world_frame by init_pose
+      if (have_initial_poses_ && expand_slam_maps_to_common_canvas_) {
+        if (publish_robot_map_tf_) {
+          publishRobotMapTf(subscription);
+        }
+        if (publish_robot_maps_) {
+          subscription.robot_merged_map_pub = this->create_publisher<nav_msgs::msg::OccupancyGrid>(
+              ros1_names::append(robot_name, robot_merged_map_topic_),
+              rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable());
+        }
+      }
     }
   }
 }
@@ -251,29 +282,32 @@ void MapMerge::mapMerging()
   RCLCPP_INFO_ONCE(logger_, "Map merging started.");
 
   nav_msgs::msg::OccupancyGrid::SharedPtr merged_map;
+  // filled on the expansion path: robots and their maps on the merged canvas
+  std::vector<MapSubscription*> merged_robots;
+  std::vector<nav_msgs::msg::OccupancyGrid::ConstSharedPtr> grids;
+  bool did_expand = false;
 
   if (have_initial_poses_) {
     /* Sort by robot name so reference order is stable (e.g. robot1 first; matches init_pose convention). */
-    std::vector<std::tuple<std::string, nav_msgs::msg::OccupancyGrid::ConstSharedPtr,
-                            geometry_msgs::msg::Transform>>
-      keyed;
-    keyed.reserve(subscriptions_size_);
+    std::vector<MapSubscription*> sorted;
+    sorted.reserve(subscriptions_size_);
     for (auto& subscription : subscriptions_) {
-      keyed.emplace_back(subscription.robot_name, subscription.readonly_map, subscription.initial_pose);
+      sorted.push_back(&subscription);
     }
-    std::sort(keyed.begin(), keyed.end(),
-              [](const auto& a, const auto& b) { return std::get<0>(a) < std::get<0>(b); });
+    std::sort(sorted.begin(), sorted.end(),
+              [](const MapSubscription* a, const MapSubscription* b) {
+                return a->robot_name < b->robot_name;
+              });
 
-    std::vector<nav_msgs::msg::OccupancyGrid::ConstSharedPtr> grids;
     std::vector<geometry_msgs::msg::Transform> transforms;
-    grids.reserve(keyed.size());
-    transforms.reserve(keyed.size());
-    for (const auto& e : keyed) {
-      grids.push_back(std::get<1>(e));
-      transforms.push_back(std::get<2>(e));
+    grids.reserve(sorted.size());
+    transforms.reserve(sorted.size());
+    for (const auto* subscription : sorted) {
+      grids.push_back(subscription->readonly_map);
+      transforms.push_back(subscription->initial_pose);
     }
 
-    bool did_expand = false;
+    geometry_msgs::msg::Pose canvas_origin;
     if (expand_slam_maps_to_common_canvas_) {
       /* init_pose_* is applied while embedding, where cells have metric positions and the
        * rotation pivots about each robot's map origin. The OpenCV merge below then only
@@ -287,6 +321,8 @@ void MapMerge::mapMerging()
           expanded.size() == grids.size()) {
         grids = std::move(expanded);
         did_expand = true;
+        merged_robots = sorted;
+        canvas_origin = grids.front()->info.origin;
         RCLCPP_INFO_ONCE(
           logger_, "SLAM map expansion: embedded all robot maps in one common grid (%s)",
           expand_slam_maps_apply_init_pose_ ? "placed by init_pose_*"
@@ -318,6 +354,11 @@ void MapMerge::mapMerging()
       std::lock_guard<std::mutex> lock(pipeline_mutex_);
       merged_map = pipeline_.composeGrids(logger_);
     }
+    // identity overlay of equal canvases: the merged grid is the canvas, so it has
+    // a real position in world_frame (composeGrids centres it otherwise)
+    if (merged_map && did_expand) {
+      merged_map->info.origin = canvas_origin;
+    }
   } else {
     std::lock_guard<std::mutex> lock(pipeline_mutex_);
     merged_map = pipeline_.composeGrids(logger_);
@@ -336,6 +377,36 @@ void MapMerge::mapMerging()
 
   rcpputils::assert_true(merged_map->info.resolution > 0.f);
   merged_map_publisher_->publish(*merged_map);
+
+  if (publish_robot_maps_ && did_expand) {
+    publishRobotMaps(*merged_map, grids, merged_robots);
+  }
+}
+
+void MapMerge::publishRobotMaps(
+  const nav_msgs::msg::OccupancyGrid& merged,
+  const std::vector<nav_msgs::msg::OccupancyGrid::ConstSharedPtr>& own_maps,
+  const std::vector<MapSubscription*>& robots)
+{
+  for (size_t i = 0; i < robots.size(); ++i) {
+    const auto& own = own_maps[i];
+    if (!robots[i]->robot_merged_map_pub || !own) {
+      continue;
+    }
+    // own maps were expanded to the merge canvas, which the merged map is
+    if (own->data.size() != merged.data.size()) {
+      RCLCPP_WARN_THROTTLE(logger_, *this->get_clock(), 5000,
+                           "Merged map is not the expansion canvas, not publishing robot maps");
+      return;
+    }
+    nav_msgs::msg::OccupancyGrid robot_map = merged;
+    for (size_t c = 0; c < robot_map.data.size(); ++c) {
+      if (own->data[c] >= 0) {
+        robot_map.data[c] = own->data[c];
+      }
+    }
+    robots[i]->robot_merged_map_pub->publish(robot_map);
+  }
 }
 
 bool MapMerge::expandSlamMapsToCommonCanvas(
@@ -442,6 +513,26 @@ bool MapMerge::expandSlamMapsToCommonCanvas(
   }
 
   return true;
+}
+
+void MapMerge::publishRobotMapTf(MapSubscription& subscription)
+{
+  geometry_msgs::msg::TransformStamped t;
+  t.header.stamp = this->now();
+  t.header.frame_id = world_frame_;
+  t.child_frame_id = robot_map_frame_;
+  // same placement as in the merged map
+  t.transform = expand_slam_maps_apply_init_pose_ ? subscription.initial_pose : identityTransform();
+  tf2_msgs::msg::TFMessage msg;
+  msg.transforms.push_back(t);
+
+  const std::string topic = ros1_names::append(subscription.robot_name, "tf_static");
+  // latched like tf2_ros::StaticTransformBroadcaster
+  subscription.tf_static_pub = this->create_publisher<tf2_msgs::msg::TFMessage>(
+      topic, rclcpp::QoS(1).transient_local().reliable());
+  subscription.tf_static_pub->publish(msg);
+  RCLCPP_INFO(logger_, "Publishing %s -> %s on %s", world_frame_.c_str(),
+              robot_map_frame_.c_str(), topic.c_str());
 }
 
 void MapMerge::poseEstimation()

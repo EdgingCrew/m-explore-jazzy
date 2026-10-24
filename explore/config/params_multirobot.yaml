@@ -1,0 +1,31 @@
+# explore_lite for several robots exploring the merged map of multirobot_map_merge.
+# Needs map_merge with known_init_poses, expand_slam_maps_to_common_canvas,
+# publish_robot_map_tf (merged map in its world_frame, world_frame -> map in every
+# robot's TF tree) and publish_robot_maps (<robot>/merged_map).
+/**:
+  ros__parameters:
+    robot_base_frame: base_link
+    return_to_init: true
+    # this robot's merged map (map_merge publish_robot_maps): global frontiers
+    costmap_topic: merged_map
+    costmap_updates_topic: merged_map_updates
+    visualize: true
+    planner_frequency: 0.5
+    progress_timeout: 30.0
+    potential_scale: 3.0
+    orientation_scale: 0.0
+    gain_scale: 1.0
+    # A frontier within coordination_radius (m) of another robot's goal is claimed
+    # by that robot and only used when every frontier is claimed.
+    coordination_radius: 2.0
+    # Prefer frontiers far from the other robots' current goals. Same units as
+    # potential_scale (distance to this robot): equal values weigh "far from the
+    # others" as much as "close to me", larger values spread the robots more.
+    # Large frontiers still win through gain_scale (size) unless claimed.
+    coordination_scale: 6.0
+    robot_goals_topic: /explore/robot_goals
+    transform_tolerance: 0.3
+    min_frontier_size: 0.3
+    # keep looking for this long (s) before finishing when no frontier is left
+    completion_timeout: 20.0
+    use_sim_time: true

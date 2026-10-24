@@ -45,7 +45,10 @@
 
 #include <chrono>
 #include <cmath>
+#include <explore_lite_msgs/msg/explore_goal.hpp>
 #include <explore_lite_msgs/msg/explore_status.hpp>
+#include <map>
+#include <optional>
 #include <geometry_msgs/msg/point.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/bool.hpp>
@@ -100,6 +103,20 @@ private:
 
   bool goalOnBlacklist(const geometry_msgs::msg::Point& goal);
 
+  /**
+   * @brief Skip frontiers other robots are heading for (coordination_radius)
+   * and prefer frontiers far from their goals (coordination_scale)
+   */
+  void applyCoordination(std::vector<frontier_exploration::Frontier>& frontiers,
+                         const geometry_msgs::msg::Point& robot);
+  void publishRobotGoal(const geometry_msgs::msg::Point& goal, bool active);
+  /**
+   * @brief True while no usable frontier has existed for less than
+   * completion_timeout, i.e. exploration should not finish yet
+   */
+  bool waitBeforeFinishing(const std::string& reason);
+  void robotGoalCallback(const explore_lite_msgs::msg::ExploreGoal::SharedPtr msg);
+
 #ifdef NAV2_RESULT_HAS_ERROR_CODE
   static bool isUnreachableGoalError(uint16_t error_code);
 #endif
@@ -131,6 +148,11 @@ private:
   // rclcpp::TimerBase::SharedPtr oneshot_;
 
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr resume_subscription_;
+
+  // frontier goals shared between robots, keyed by explore node name
+  rclcpp::Publisher<explore_lite_msgs::msg::ExploreGoal>::SharedPtr robot_goal_pub_;
+  rclcpp::Subscription<explore_lite_msgs::msg::ExploreGoal>::SharedPtr robot_goals_sub_;
+  std::map<std::string, explore_lite_msgs::msg::ExploreGoal> other_robot_goals_;
   void resumeCallback(const std_msgs::msg::Bool::SharedPtr msg);
 
   std::vector<geometry_msgs::msg::Point> frontier_blacklist_;
@@ -145,6 +167,11 @@ private:
   // parameters
   double planner_frequency_;
   double potential_scale_, orientation_scale_, gain_scale_;
+  double coordination_scale_;
+  double coordination_radius_;
+  double completion_timeout_;
+  std::optional<rclcpp::Time> no_frontier_since_;
+  double robot_goal_timeout_;
   double progress_timeout_;
   bool visualize_;
   bool return_to_init_;
