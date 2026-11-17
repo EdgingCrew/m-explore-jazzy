@@ -132,8 +132,8 @@ private:
                         const std::vector<nav_msgs::msg::OccupancyGrid::ConstSharedPtr>& own_maps,
                         const std::vector<MapSubscription*>& robots);
 
-  void fullMapUpdate(const nav_msgs::msg::OccupancyGrid::SharedPtr msg, MapSubscription& map,
-                     const std::string& robot_name);
+  void fullMapUpdate(const nav_msgs::msg::OccupancyGrid::SharedPtr msg,
+                     MapSubscription& map);
   void partialMapUpdate(const map_msgs::msg::OccupancyGridUpdate::SharedPtr msg,
                         MapSubscription& map);
 

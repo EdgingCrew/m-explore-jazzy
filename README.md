@@ -60,7 +60,7 @@ ros2 launch nav2_bringup tb3_simulation_launch.py slam:=True \
   params_file:=$(ros2 pkg prefix explore_lite)/share/explore_lite/config/nav2_params_tb3_sim.yaml
 ```
 
-`nav2_params_tb3_sim.yaml` is the stock nav2_bringup params file tuned for exploration (relaxed collision monitor, higher TF tolerances, lighter MPPI). With the default params the robot tends to get stuck next to obstacles. Use `headless:=False` to see the Gazebo GUI.
+`nav2_params_tb3_sim.yaml` is the stock nav2_bringup params file tuned for exploration (relaxed collision monitor, higher TF tolerances, Regulated Pure Pursuit instead of MPPI). With the default params the robot tends to get stuck next to obstacles. Use `headless:=False` to see the Gazebo GUI.
 
 And run this package with
 ```

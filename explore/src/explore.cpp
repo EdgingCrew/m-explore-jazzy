@@ -64,7 +64,7 @@ frontierGoal(const frontier_exploration::Frontier& frontier,
   double dy = frontier.centroid.y - robot.y;
   // min_distance stays infinite (middle unset) for single-cell frontiers
   if (std::isfinite(frontier.min_distance) &&
-      sqrt(dx * dx + dy * dy) < frontier.min_distance) {
+      std::hypot(dx, dy) < frontier.min_distance) {
     return frontier.middle;
   }
   return frontier.centroid;

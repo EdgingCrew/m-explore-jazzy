@@ -40,7 +40,6 @@
 #include <cmath>
 #include <limits>
 #include <string>
-#include <tuple>
 #include <thread>
 #include <vector>
 
@@ -81,13 +80,8 @@ namespace map_merge
 MapMerge::MapMerge() : Node("map_merge", rclcpp::NodeOptions()
                                        .allow_undeclared_parameters(true)
                                        .automatically_declare_parameters_from_overrides(true)),
-                       expand_slam_maps_to_common_canvas_(true),
-                       expand_slam_maps_margin_m_(1.0),
-                       expand_slam_maps_apply_init_pose_(true),
-                       publish_robot_map_tf_(false),
-                       publish_robot_maps_(false),
-                       subscriptions_size_(0),
-                       logger_(this->get_logger())
+subscriptions_size_(0),
+logger_(this->get_logger())
 {
   std::string frame_id;
   std::string merged_map_topic;
@@ -102,27 +96,13 @@ MapMerge::MapMerge() : Node("map_merge", rclcpp::NodeOptions()
   if (!this->has_parameter("robot_namespace")) this->declare_parameter<std::string>("robot_namespace", "");
   if (!this->has_parameter("merged_map_topic")) this->declare_parameter<std::string>("merged_map_topic", "map");
   if (!this->has_parameter("world_frame")) this->declare_parameter<std::string>("world_frame", "world");
-  if (!this->has_parameter("expand_slam_maps_to_common_canvas")) {
-    this->declare_parameter<bool>("expand_slam_maps_to_common_canvas", true);
-  }
-  if (!this->has_parameter("expand_slam_maps_margin_m")) {
-    this->declare_parameter<double>("expand_slam_maps_margin_m", 1.0);
-  }
-  if (!this->has_parameter("expand_slam_maps_apply_init_pose")) {
-    this->declare_parameter<bool>("expand_slam_maps_apply_init_pose", true);
-  }
-  if (!this->has_parameter("publish_robot_map_tf")) {
-    this->declare_parameter<bool>("publish_robot_map_tf", false);
-  }
-  if (!this->has_parameter("robot_map_frame")) {
-    this->declare_parameter<std::string>("robot_map_frame", "map");
-  }
-  if (!this->has_parameter("publish_robot_maps")) {
-    this->declare_parameter<bool>("publish_robot_maps", false);
-  }
-  if (!this->has_parameter("robot_merged_map_topic")) {
-    this->declare_parameter<std::string>("robot_merged_map_topic", "merged_map");
-  }
+  if (!this->has_parameter("expand_slam_maps_to_common_canvas")) this->declare_parameter<bool>("expand_slam_maps_to_common_canvas", true);
+  if (!this->has_parameter("expand_slam_maps_margin_m")) this->declare_parameter<double>("expand_slam_maps_margin_m", 1.0);
+  if (!this->has_parameter("expand_slam_maps_apply_init_pose")) this->declare_parameter<bool>("expand_slam_maps_apply_init_pose", true);
+  if (!this->has_parameter("publish_robot_map_tf")) this->declare_parameter<bool>("publish_robot_map_tf", false);
+  if (!this->has_parameter("robot_map_frame")) this->declare_parameter<std::string>("robot_map_frame", "map");
+  if (!this->has_parameter("publish_robot_maps")) this->declare_parameter<bool>("publish_robot_maps", false);
+  if (!this->has_parameter("robot_merged_map_topic")) this->declare_parameter<std::string>("robot_merged_map_topic", "merged_map");
 
   this->get_parameter("merging_rate", merging_rate_);
   this->get_parameter("discovery_rate", discovery_rate_);
@@ -245,8 +225,8 @@ void MapMerge::topicSubscribing()
       auto map_qos = rclcpp::QoS(rclcpp::KeepLast(50)).transient_local().reliable();
       subscription.map_sub = this->create_subscription<nav_msgs::msg::OccupancyGrid>(
           map_topic, map_qos,
-          [this, &subscription, robot_name](const nav_msgs::msg::OccupancyGrid::SharedPtr msg) {
-            fullMapUpdate(msg, subscription, robot_name);
+          [this, &subscription](const nav_msgs::msg::OccupancyGrid::SharedPtr msg) {
+            fullMapUpdate(msg, subscription);
           });
       RCLCPP_INFO(logger_, "Subscribing to MAP updates topic: %s.",
               map_updates_topic.c_str());
@@ -486,9 +466,6 @@ bool MapMerge::expandSlamMapsToCommonCanvas(
     expanded->info.origin.position.y = min_y;
     expanded->info.origin.position.z = map->info.origin.position.z;
     expanded->info.origin.orientation.w = 1.0;
-    expanded->info.origin.orientation.x = 0.0;
-    expanded->info.origin.orientation.y = 0.0;
-    expanded->info.origin.orientation.z = 0.0;
     expanded->data.assign(static_cast<size_t>(out_w) * out_h, static_cast<int8_t>(-1));
 
     /* Look up every canvas cell centre in the source grid (inverse mapping), so a
@@ -571,12 +548,12 @@ void MapMerge::poseEstimation()
 // void MapMerge::fullMapUpdate(const nav_msgs::OccupancyGrid::ConstPtr& msg,
 //                              MapSubscription& subscription)
 void MapMerge::fullMapUpdate(const nav_msgs::msg::OccupancyGrid::SharedPtr msg,
-                             MapSubscription& subscription, const std::string& robot_name)
+                     MapSubscription& subscription)
 {
   RCLCPP_DEBUG(logger_, "received full map update");
   // RCLCPP_INFO(logger_, "received full map update");
   if (msg->header.frame_id.empty() || msg->header.frame_id == "map") {
-    msg->header.frame_id = ros1_names::append(robot_name, "map");
+    msg->header.frame_id = ros1_names::append(subscription.robot_name, "map");
   }
   std::lock_guard<std::mutex> lock(subscription.mutex);
   if (subscription.readonly_map){
