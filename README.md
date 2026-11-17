@@ -1,6 +1,6 @@
 # m-explore ROS2 port
 
-ROS2 package port for multi-robot autonomous exploration of [m-explore](https://github.com/hrnr/m-explore). Targets **ROS 2 Humble** and newer.
+ROS2 package port for multi-robot autonomous exploration of [m-explore](https://github.com/hrnr/m-explore). This fork of [m-explore-ros2](https://github.com/robo-friends/m-explore-ros2) targets **ROS 2 Jazzy** (gz sim, slam_toolbox) and provides map merging and exploration for the [edgeAI robot workspace](#Using-it-from-the-edgeAI-workspace).
 
 ### Contents
 1. [Autonomous exploration](#Autonomous-exploration)
@@ -13,6 +13,7 @@ ROS2 package port for multi-robot autonomous exploration of [m-explore](https://
     * [Simulation demo with unknown initial poses](#Unknown-initial-poses)
     * [ROS2 requirements](#ROS2-requirements)
     * [Instructions for simulation demos](#Running-the-demo-with-TB3)
+3. [Using it from the edgeAI workspace](#Using-it-from-the-edgeAI-workspace)
 
 ## Autonomous exploration
 
@@ -32,29 +33,34 @@ No binaries yet.
 Building
 --------
 
-Build as a standard colcon package. There are no special dependencies needed
-(use rosdep to resolve dependencies in ROS). 
+The repository is a [pixi](https://pixi.sh) workspace with ROS 2 Jazzy from [RoboStack](https://robostack.github.io):
+```
+pixi run import   # TurtleBot3 sources for the simulations (turtle.repos -> turtle/src)
+pixi run build
+pixi shell
+```
+`pixi shell` sources `install/setup.bash`, so start a new shell after the first build.
+
+Without pixi, build as a standard colcon package (use rosdep to resolve dependencies in ROS).
 
 RUNNING
 -------
 To run with a params file just run it with
 ```
-ros2 run explore_lite explore --ros-args --params-file <path_to_ros_ws>/m-explore-ros2/explore/config/params.yaml
+ros2 run explore_lite explore --ros-args --params-file $(ros2 pkg prefix explore_lite)/share/explore_lite/config/params.yaml
 ```
 
 ### Running the explore demo with TB3
-Install nav2 and tb3 simulation. You can follow the [tutorial](https://navigation.ros.org/getting_started/index.html#installation).
+The pixi workspace already contains nav2 and the TB3 simulation (`nav2_minimal_tb3_sim`). Otherwise install them following the [tutorial](https://navigation.ros.org/getting_started/index.html#installation).
 
 Then just run the nav2 stack with slam:
 
 ```
-export TURTLEBOT3_MODEL=waffle
-export GAZEBO_MODEL_PATH=$GAZEBO_MODEL_PATH:/opt/ros/${ROS_DISTRO}/share/turtlebot3_gazebo/models
-ros2 launch nav2_bringup tb3_simulation_launch.py slam:=True headless:=True \
+ros2 launch nav2_bringup tb3_simulation_launch.py slam:=True \
   params_file:=$(ros2 pkg prefix explore_lite)/share/explore_lite/config/nav2_params_tb3_sim.yaml
 ```
 
-`nav2_params_tb3_sim.yaml` is the stock nav2_bringup params file tuned for exploration (relaxed collision monitor, higher TF tolerances, lighter MPPI). With the default params the robot tends to get stuck next to obstacles. Drop `headless:=True` to see the Gazebo GUI.
+`nav2_params_tb3_sim.yaml` is the stock nav2_bringup params file tuned for exploration (relaxed collision monitor, higher TF tolerances, lighter MPPI). With the default params the robot tends to get stuck next to obstacles. Use `headless:=False` to see the Gazebo GUI.
 
 And run this package with
 ```
@@ -71,17 +77,7 @@ By default the exploration node will start right away the frontier-based explora
 The robot will return to its initial pose after exploration if you want by defining the parameter `return_to_init` to `True` when launching the node.
 
 #### TB3 troubleshooting
-If you have trouble with TB3 in simulation, try replacing the packaged turtlebot3 simulations with the upstream repo:
-
-```
-source /opt/ros/${ROS_DISTRO}/setup.bash
-export TURTLEBOT3_MODEL=waffle
-sudo rm -rf /opt/ros/${ROS_DISTRO}/share/turtlebot3_simulations
-sudo git clone https://github.com/ROBOTIS-GIT/turtlebot3_simulations /opt/ros/${ROS_DISTRO}/share/turtlebot3_simulations
-export GAZEBO_MODEL_PATH=$GAZEBO_MODEL_PATH:/opt/ros/${ROS_DISTRO}/share/turtlebot3_simulations/turtlebot3_gazebo/models
-```
-
-Then you'll be able to run it.
+The TurtleBot3 packages are built from the Jazzy branches listed in `turtle.repos`. If one is missing (e.g. `turtlebot3_gazebo` for the multirobot world), run `pixi run import && pixi run build`.
 
 ______________________________________________________________________
 ## Multirobot map merge
@@ -94,7 +90,7 @@ This modality gives normally the best results. The original ROS1 code only suppo
 
 https://user-images.githubusercontent.com/8033598/144522712-c31fb4bb-bb5a-4859-b3e1-8ad665f80696.mp4
 
-We also support using [slam_toolbox](https://github.com/SteveMacenski/slam_toolbox) in a yet [experimental branch](https://github.com/robo-friends/m-explore-ros2/tree/feature/slam_toolbox_compat). The following demo shows the map merging using the currently supported and most used ROS2-SLAM library.
+We also support using [slam_toolbox](https://github.com/SteveMacenski/slam_toolbox), see [its settings](#slam_toolbox-parameters-simulation-vs-real-world). The following demo shows the map merging using the currently supported and most used ROS2-SLAM library.
 
 https://user-images.githubusercontent.com/8033598/170846935-cfae9f3f-5edd-43ea-b993-7b3ba1db921b.mp4
 
@@ -176,8 +172,27 @@ How it fits together:
 
 Or move each robot with its corresponding rviz2 interface by sending nav2 goals. To see the map merged just launch rviz2:
 ```
-rviz2 -d <your/ros2_ws>/src/m-explore-ros2/map_merge/launch/map_merge.rviz
+rviz2 -d $(ros2 pkg prefix multirobot_map_merge)/share/multirobot_map_merge/launch/map_merge.rviz
 ```
+
+______________________________________________________________________
+## Using it from the edgeAI workspace
+
+The [edgeai_robot_ws](https://github.com/EdgingCrew/edgeai_robot_ws) runs the two-robot simulation (`multi_robot_simulation.launch.py`, see its README); map merging and exploration run from this workspace in its own pixi environment. Both environments use CycloneDDS on `ROS_DOMAIN_ID=0`, so the nodes see each other.
+
+Map merging with the robots' start poses of the edgeAI simulation:
+```
+ros2 launch multirobot_map_merge map_merge.launch.py \
+  params_file:=<path/to/edgeai_robot_ws>/src/edgeai_robot_description/config/map_merge_params.yaml
+```
+Exploration, one terminal per robot:
+```
+ros2 launch explore_lite explore.launch.py namespace:=robot1 \
+  params_file:=$(ros2 pkg prefix explore_lite)/share/explore_lite/config/params_multirobot.yaml
+ros2 launch explore_lite explore.launch.py namespace:=robot2 \
+  params_file:=$(ros2 pkg prefix explore_lite)/share/explore_lite/config/params_multirobot.yaml
+```
+If you change the spawn poses there, update `init_pose_*` in its `map_merge_params.yaml` to match (robot2's start pose relative to robot1's).
 
 WIKI
 ----
