@@ -14,11 +14,13 @@ using nav2_costmap_2d::NO_INFORMATION;
 
 FrontierSearch::FrontierSearch(nav2_costmap_2d::Costmap2D* costmap,
                                double potential_scale, double gain_scale,
-                               double min_frontier_size, rclcpp::Logger logger)
+                               double min_frontier_size, rclcpp::Logger logger,
+                               double min_unknown_area)
   : costmap_(costmap)
   , potential_scale_(potential_scale)
   , gain_scale_(gain_scale)
   , min_frontier_size_(min_frontier_size)
+  , min_unknown_area_(min_unknown_area)
   , logger_(logger)
 {
 }
@@ -77,7 +79,8 @@ FrontierSearch::searchFrom(geometry_msgs::msg::Point position)
         frontier_flag[nbr] = true;
         Frontier new_frontier = buildNewFrontier(nbr, pos, frontier_flag);
         if (new_frontier.size * costmap_->getResolution() >=
-            min_frontier_size_) {
+                min_frontier_size_ &&
+            !isEnclosedPocket(new_frontier)) {
           frontier_list.push_back(new_frontier);
         }
       }
@@ -205,6 +208,46 @@ bool FrontierSearch::isNewFrontierCell(unsigned int idx,
   }
 
   return false;
+}
+
+bool FrontierSearch::isEnclosedPocket(const Frontier& frontier) const
+{
+  if (min_unknown_area_ <= 0.0) {
+    return false;
+  }
+  // Flood-fill the unknown cells connected to the frontier. Stop as soon as the
+  // area is large enough (open, worth exploring); running out of cells first means
+  // the unknown space is enclosed by known cells and small.
+  const double resolution = costmap_->getResolution();
+  const size_t max_cells =
+      static_cast<size_t>(min_unknown_area_ / (resolution * resolution));
+  std::vector<bool> seen(size_x_ * size_y_, false);
+  std::queue<unsigned int> fill;
+  for (const auto& p : frontier.points) {
+    unsigned int mx, my;
+    if (costmap_->worldToMap(p.x, p.y, mx, my)) {
+      const unsigned int idx = costmap_->getIndex(mx, my);
+      if (!seen[idx]) {
+        seen[idx] = true;
+        fill.push(idx);
+      }
+    }
+  }
+  size_t cells = 0;
+  while (!fill.empty()) {
+    const unsigned int idx = fill.front();
+    fill.pop();
+    if (++cells >= max_cells) {
+      return false;
+    }
+    for (unsigned int nbr : nhood4(idx, *costmap_)) {
+      if (!seen[nbr] && map_[nbr] == NO_INFORMATION) {
+        seen[nbr] = true;
+        fill.push(nbr);
+      }
+    }
+  }
+  return true;
 }
 
 double FrontierSearch::frontierCost(const Frontier& frontier)

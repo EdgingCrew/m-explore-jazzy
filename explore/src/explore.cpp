@@ -90,6 +90,7 @@ Explore::Explore()
   this->declare_parameter<float>("orientation_scale", 0.0);
   this->declare_parameter<float>("gain_scale", 1.0);
   this->declare_parameter<float>("min_frontier_size", 0.5);
+  this->declare_parameter<float>("min_unknown_area", 0.0);
   this->declare_parameter<bool>("return_to_init", false);
   this->declare_parameter<float>("coordination_scale", 0.0);
   this->declare_parameter<float>("coordination_radius", 0.0);
@@ -117,9 +118,9 @@ Explore::Explore()
       rclcpp_action::create_client<nav2_msgs::action::NavigateToPose>(
           this, ACTION_NAME);
 
-  search_ = frontier_exploration::FrontierSearch(costmap_client_.getCostmap(),
-                                                 potential_scale_, gain_scale_,
-                                                 min_frontier_size, logger_);
+  search_ = frontier_exploration::FrontierSearch(
+      costmap_client_.getCostmap(), potential_scale_, gain_scale_, min_frontier_size,
+      logger_, this->get_parameter("min_unknown_area").as_double());
 
   if (visualize_) {
     marker_array_publisher_ =
@@ -466,6 +467,12 @@ bool Explore::waitBeforeFinishing(const std::string& reason)
   RCLCPP_INFO_THROTTLE(logger_, *this->get_clock(), 5000,
                        "%s, finishing unless one shows up within %.0f s",
                        reason.c_str(), completion_timeout_);
+  // Stand still meanwhile: the current goal's frontier is gone, and pursuing it
+  // can wedge the robot (e.g. behind a post) right before it returns home
+  if (goal_active_) {
+    move_base_client_->async_cancel_all_goals();
+    goal_active_ = false;
+  }
   // nothing to claim meanwhile
   publishRobotGoal(prev_goal_, false);
   return true;

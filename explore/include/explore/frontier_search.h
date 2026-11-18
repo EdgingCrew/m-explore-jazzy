@@ -33,7 +33,8 @@ public:
    * @param costmap Reference to costmap data to search.
    */
   FrontierSearch(nav2_costmap_2d::Costmap2D* costmap, double potential_scale,
-                 double gain_scale, double min_frontier_size, rclcpp::Logger logger);
+                 double gain_scale, double min_frontier_size, rclcpp::Logger logger,
+                 double min_unknown_area = 0.0);
 
   /**
    * @brief Runs search implementation, outward from the start position
@@ -75,12 +76,20 @@ protected:
    */
   double frontierCost(const Frontier& frontier);
 
+  /**
+   * @brief True if the unknown space behind the frontier is enclosed by known cells
+   * and smaller than min_unknown_area (e.g. the shadow of a post, or where another
+   * robot stood): there is nothing worth exploring behind it
+   */
+  bool isEnclosedPocket(const Frontier& frontier) const;
+
 private:
   nav2_costmap_2d::Costmap2D* costmap_;
   unsigned char* map_;
   unsigned int size_x_, size_y_;
   double potential_scale_, gain_scale_;
   double min_frontier_size_;
+  double min_unknown_area_ = 0.0;
   rclcpp::Logger logger_;
 };
 }  // namespace frontier_exploration
