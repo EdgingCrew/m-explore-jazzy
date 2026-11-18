@@ -95,6 +95,7 @@ Explore::Explore()
   this->declare_parameter<float>("coordination_radius", 0.0);
   this->declare_parameter<float>("completion_timeout", 0.0);
   this->declare_parameter<std::string>("robot_goals_topic", "/explore/robot_goals");
+  this->declare_parameter<std::string>("blacklist_topic", "/explore/blacklist");
 
   this->get_parameter("planner_frequency", planner_frequency_);
   this->get_parameter("progress_timeout", timeout);
@@ -141,6 +142,20 @@ Explore::Explore()
   robot_goals_sub_ = this->create_subscription<explore_lite_msgs::msg::ExploreGoal>(
       robot_goals_topic, 10,
       std::bind(&Explore::robotGoalCallback, this, std::placeholders::_1));
+  // Goals blacklisted by any robot; latched so robots started later get them too
+  const auto blacklist_qos = rclcpp::QoS(100).transient_local().reliable();
+  const auto blacklist_topic = this->get_parameter("blacklist_topic").as_string();
+  blacklist_pub_ = this->create_publisher<geometry_msgs::msg::PointStamped>(
+      blacklist_topic, blacklist_qos);
+  blacklist_sub_ = this->create_subscription<geometry_msgs::msg::PointStamped>(
+      blacklist_topic, blacklist_qos,
+      [this](const geometry_msgs::msg::PointStamped::SharedPtr msg) {
+        // own entries are already on the list
+        if (msg->header.frame_id == costmap_client_.getGlobalFrameID() &&
+            !goalOnBlacklist(msg->point)) {
+          frontier_blacklist_.push_back(msg->point);
+        }
+      });
 
   // Subscription to resume or stop exploration
   resume_subscription_ = this->create_subscription<std_msgs::msg::Bool>(
@@ -270,6 +285,11 @@ void Explore::makePlan()
 {
   // find frontiers
   auto pose = costmap_client_.getRobotPose();
+  robot_position_ = pose.position;
+
+  if (!waitForFirstGoals(pose.position)) {
+    return;
+  }
   // get frontiers sorted according to cost
   auto frontiers = search_.searchFrom(pose.position);
   RCLCPP_DEBUG(logger_, "found %lu frontiers", frontiers.size());
@@ -289,7 +309,7 @@ void Explore::makePlan()
     return;
   }
 
-  applyCoordination(frontiers, pose.position);
+  const size_t unclaimed = applyCoordination(frontiers, pose.position);
 
   // publish frontiers as visualization markers
   if (visualize_) {
@@ -314,6 +334,18 @@ void Explore::makePlan()
     return;
   }
   no_frontier_since_.reset();
+  // Every usable frontier is another robot's goal: wait until one frees up instead
+  // of following that robot, both would drive to the same place and block each other
+  if (static_cast<size_t>(frontier - frontiers.begin()) >= unclaimed) {
+    if (goal_active_) {
+      move_base_client_->async_cancel_all_goals();
+      goal_active_ = false;
+    }
+    publishRobotGoal(prev_goal_, false);
+    RCLCPP_INFO_THROTTLE(logger_, *this->get_clock(), 10000,
+                         "All frontiers are other robots' goals, waiting");
+    return;
+  }
   geometry_msgs::msg::Point target_position =
       frontierGoal(*frontier, pose.position);
 
@@ -321,12 +353,19 @@ void Explore::makePlan()
   bool same_goal = same_point(prev_goal_, target_position);
 
   prev_goal_ = target_position;
-  publishRobotGoal(target_position, true);
   if (!same_goal || prev_distance_ > frontier->min_distance) {
     // we have different goal or we made some progress
     last_progress_ = this->now();
     prev_distance_ = frontier->min_distance;
   }
+  // Moving at all (also on a detour, when the frontier doesn't get closer) keeps the
+  // claim on the goal, see publishRobotGoal()
+  if (!same_goal || std::hypot(pose.position.x - moved_from_.x,
+                               pose.position.y - moved_from_.y) > 0.25) {
+    moved_from_ = pose.position;
+    last_moved_ = this->now();
+  }
+  publishRobotGoal(target_position, true);
   // black list if we've made no progress for a long time
   if (goal_active_ &&
       (this->now() - last_progress_ >
@@ -353,7 +392,12 @@ void Explore::makePlan()
   // send goal to move_base if we have something new to pursue
   auto goal = nav2_msgs::action::NavigateToPose::Goal();
   goal.pose.pose.position = target_position;
-  goal.pose.pose.orientation.w = 1.;
+  // Face the frontier: planners that plan the goal heading (e.g. Smac lattice) then
+  // add no turn at the goal, and forward-facing sensors look at the new area.
+  const double yaw = std::atan2(target_position.y - pose.position.y,
+                                target_position.x - pose.position.x);
+  goal.pose.pose.orientation.z = std::sin(yaw / 2.0);
+  goal.pose.pose.orientation.w = std::cos(yaw / 2.0);
   goal.pose.header.frame_id = costmap_client_.getGlobalFrameID();
   goal.pose.header.stamp = this->now();
 
@@ -427,6 +471,30 @@ bool Explore::waitBeforeFinishing(const std::string& reason)
   return true;
 }
 
+bool Explore::waitForFirstGoals(const geometry_msgs::msg::Point& robot)
+{
+  // Robots that pick their first frontier at the same time can't see each other's
+  // goals yet and tend to pick the same one. So robots take turns by name: announce
+  // this robot (inactive goal) in the first cycle, then start once no robot with a
+  // smaller name is still choosing, or after 5 cycles at most.
+  constexpr int max_startup_cycles = 5;
+  if (startup_cycles_ < 0) {
+    return true;
+  }
+  publishRobotGoal(robot, false);
+  const std::string self = this->get_fully_qualified_name();
+  const bool smaller_robot_choosing = std::any_of(
+      other_robot_goals_.begin(), other_robot_goals_.end(),
+      [&self](const auto& entry) { return entry.first < self && !entry.second.active; });
+  if (startup_cycles_ == 0 ||
+      (smaller_robot_choosing && startup_cycles_ < max_startup_cycles)) {
+    ++startup_cycles_;
+    return false;
+  }
+  startup_cycles_ = -1;
+  return true;
+}
+
 void Explore::publishRobotGoal(const geometry_msgs::msg::Point& goal, bool active)
 {
   explore_lite_msgs::msg::ExploreGoal msg;
@@ -434,7 +502,11 @@ void Explore::publishRobotGoal(const geometry_msgs::msg::Point& goal, bool activ
   msg.header.frame_id = costmap_client_.getGlobalFrameID();
   msg.robot = this->get_fully_qualified_name();
   msg.goal = goal;
-  msg.active = active;
+  msg.position = robot_position_;
+  // A robot that hasn't moved 0.25 m for a while (stuck, or wiggling in place)
+  // releases its frontier, so robots waiting for a free frontier can take it over
+  msg.active = active &&
+               (this->now() - last_moved_).seconds() < progress_timeout_ / 3.0;
   robot_goal_pub_->publish(msg);
 }
 
@@ -458,12 +530,12 @@ static double distanceToFrontier(const frontier_exploration::Frontier& frontier,
   return distance;
 }
 
-void Explore::applyCoordination(
+size_t Explore::applyCoordination(
     std::vector<frontier_exploration::Frontier>& frontiers,
     const geometry_msgs::msg::Point& robot)
 {
   if (coordination_scale_ <= 0.0 && coordination_radius_ <= 0.0) {
-    return;
+    return frontiers.size();
   }
 
   // Goals are only comparable in a frame shared by all robots, e.g. the merged
@@ -471,11 +543,16 @@ void Explore::applyCoordination(
   const std::string& frame = costmap_client_.getGlobalFrameID();
   const rclcpp::Time now = this->now();
   std::vector<std::pair<std::string, geometry_msgs::msg::Point>> other_goals;
+  // all other robots, also waiting ones
+  std::vector<geometry_msgs::msg::Point> other_positions;
   for (auto it = other_robot_goals_.begin(); it != other_robot_goals_.end();) {
     const auto& msg = it->second;
     if ((now - rclcpp::Time(msg.header.stamp)).seconds() > robot_goal_timeout_) {
       it = other_robot_goals_.erase(it);
       continue;
+    }
+    if (msg.header.frame_id == frame) {
+      other_positions.push_back(msg.position);
     }
     if (msg.active && msg.header.frame_id == frame) {
       other_goals.emplace_back(msg.robot, msg.goal);
@@ -487,14 +564,13 @@ void Explore::applyCoordination(
     }
     ++it;
   }
-  if (other_goals.empty()) {
-    return;
+  if (other_goals.empty() && other_positions.empty()) {
+    return frontiers.size();
   }
 
   const std::string self = this->get_fully_qualified_name();
-  const double resolution = costmap_client_.getCostmap()->getResolution();
-  // A frontier near another robot's goal is claimed by it and only used when all
-  // others are claimed too. Each robot keeps its current frontier while it exists
+  // A frontier near another robot's goal is claimed by it and sorted behind the
+  // unclaimed ones (makePlan waits instead of using it). Each robot keeps its current frontier while it exists
   // and is unclaimed: otherwise every goal change of one robot re-ranks the
   // frontiers of the others and they keep trading targets.
   struct Scored {
@@ -504,6 +580,7 @@ void Explore::applyCoordination(
   };
   std::vector<Scored> scored;
   scored.reserve(frontiers.size());
+  size_t unclaimed = 0;
   for (auto& frontier : frontiers) {
     // the frontier we are already heading for
     const bool current = goal_active_ &&
@@ -521,9 +598,19 @@ void Explore::applyCoordination(
       distance = std::min(distance, d);
     }
     if (std::isfinite(distance)) {
-      // same units as the potential_scale (distance to robot) term of the cost
-      frontier.cost -= coordination_scale_ * distance * resolution;
+      // metres, like the potential_scale (distance to robot) term of the cost
+      frontier.cost -= coordination_scale_ * distance;
     }
+    // Leave frontiers to robots that are closer to them: otherwise two robots
+    // side by side can pick each other's side and cross paths
+    double closest_other = std::numeric_limits<double>::infinity();
+    for (const auto& position : other_positions) {
+      closest_other = std::min(closest_other, distanceToFrontier(frontier, position));
+    }
+    if (std::isfinite(closest_other)) {
+      frontier.cost += potential_scale_ * (distanceToFrontier(frontier, robot) - closest_other);
+    }
+    unclaimed += claimed ? 0 : 1;
     scored.push_back({claimed, current, std::move(frontier)});
   }
   std::sort(scored.begin(), scored.end(), [](const Scored& a, const Scored& b) {
@@ -539,11 +626,24 @@ void Explore::applyCoordination(
   for (auto& entry : scored) {
     frontiers.push_back(std::move(entry.frontier));
   }
+  return unclaimed;
+}
+
+void Explore::blacklistForAll(const geometry_msgs::msg::Point& goal)
+{
+  frontier_blacklist_.push_back(goal);
+  geometry_msgs::msg::PointStamped msg;
+  msg.header.stamp = this->now();
+  msg.header.frame_id = costmap_client_.getGlobalFrameID();
+  msg.point = goal;
+  blacklist_pub_->publish(msg);
 }
 
 bool Explore::goalOnBlacklist(const geometry_msgs::msg::Point& goal)
 {
-  constexpr static size_t tolerace = 5;
+  // 0.5 m at 5 cm resolution: a frontier's goal point shifts a little as the map
+  // updates, and a slightly shifted goal must stay blacklisted
+  constexpr static size_t tolerace = 10;
   nav2_costmap_2d::Costmap2D* costmap2d = costmap_client_.getCostmap();
 
   // check if a goal is on the blacklist for goals that we're pursuing
@@ -586,7 +686,7 @@ void Explore::reachedGoal(const NavigationGoalHandle::WrappedResult& result,
       // If the frontier is still there after reaching it, being there does not
       // reveal it (e.g. goal already within the goal tolerance). Without this the
       // same goal is sent and "succeeds" again forever.
-      frontier_blacklist_.push_back(frontier_goal);
+      blacklistForAll(frontier_goal);
       break;
     case rclcpp_action::ResultCode::ABORTED:
 #ifdef NAV2_RESULT_HAS_ERROR_CODE
@@ -594,7 +694,7 @@ void Explore::reachedGoal(const NavigationGoalHandle::WrappedResult& result,
         RCLCPP_DEBUG(logger_, "Goal aborted with error_code=%d (%s) — blacklisting frontier",
                      result.result->error_code,
                      result.result->error_msg.c_str());
-        frontier_blacklist_.push_back(frontier_goal);
+        blacklistForAll(frontier_goal);
       } else if (result.result && result.result->error_code != 0) {
         // Controller/TF failures are about the robot, not the frontier. Keep the
         // frontier; progress_timeout blacklists it if the robot stays stuck.
@@ -653,7 +753,6 @@ void Explore::stop(bool finished_exploring)
     status_pub_->publish(status_msg);
   }
 
-  move_base_client_->async_cancel_all_goals();
   exploring_timer_->cancel();
   // also called from the destructor, possibly after shutdown
   if (rclcpp::ok()) {
@@ -661,7 +760,11 @@ void Explore::stop(bool finished_exploring)
   }
 
   if (return_to_init_ && finished_exploring) {
+    // The return goal replaces the current goal. Canceling first raced with it:
+    // the asynchronous cancel-all could also cancel the return goal.
     returnToInitialPose();
+  } else {
+    move_base_client_->async_cancel_all_goals();
   }
 }
 

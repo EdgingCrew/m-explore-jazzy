@@ -185,14 +185,14 @@ Map merging with the robots' start poses of the edgeAI simulation:
 ros2 launch multirobot_map_merge map_merge.launch.py \
   params_file:=<path/to/edgeai_robot_ws>/src/edgeai_robot_description/config/map_merge_params.yaml
 ```
-Exploration, one terminal per robot:
+Exploration, one terminal per robot, with the explore parameters for the edgeAI arena:
 ```
 ros2 launch explore_lite explore.launch.py namespace:=robot1 \
-  params_file:=$(ros2 pkg prefix explore_lite)/share/explore_lite/config/params_multirobot.yaml
+  params_file:=<path/to/edgeai_robot_ws>/src/edgeai_robot_description/config/explore_params.yaml
 ros2 launch explore_lite explore.launch.py namespace:=robot2 \
-  params_file:=$(ros2 pkg prefix explore_lite)/share/explore_lite/config/params_multirobot.yaml
+  params_file:=<path/to/edgeai_robot_ws>/src/edgeai_robot_description/config/explore_params.yaml
 ```
-If you change the spawn poses there, update `init_pose_*` in its `map_merge_params.yaml` to match (robot2's start pose relative to robot1's).
+If you change the spawn poses there, update `init_pose_*` in its `map_merge_params.yaml` to match (each robot's spawn pose in the arena).
 
 WIKI
 ----

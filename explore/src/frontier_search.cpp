@@ -178,6 +178,24 @@ bool FrontierSearch::isNewFrontierCell(unsigned int idx,
     return false;
   }
 
+  // Unknown cells within 2 cells of an obstacle are almost always the never-seen
+  // inside of a wall or box, not an opening: LiDAR noise marks single face cells
+  // free, so the unknown cells behind them must not count either (2 cells = 0.1 m
+  // at 5 cm resolution, the arena walls' thickness)
+  constexpr int obstacle_clearance = 2;
+  unsigned int mx, my;
+  costmap_->indexToCells(idx, mx, my);
+  for (int dy = -obstacle_clearance; dy <= obstacle_clearance; ++dy) {
+    for (int dx = -obstacle_clearance; dx <= obstacle_clearance; ++dx) {
+      const int x = static_cast<int>(mx) + dx;
+      const int y = static_cast<int>(my) + dy;
+      if (x >= 0 && y >= 0 && x < static_cast<int>(size_x_) && y < static_cast<int>(size_y_) &&
+          map_[costmap_->getIndex(x, y)] == LETHAL_OBSTACLE) {
+        return false;
+      }
+    }
+  }
+
   // frontier cells should have at least one cell in 4-connected neighbourhood
   // that is free
   for (unsigned int nbr : nhood4(idx, *costmap_)) {
@@ -191,8 +209,9 @@ bool FrontierSearch::isNewFrontierCell(unsigned int idx,
 
 double FrontierSearch::frontierCost(const Frontier& frontier)
 {
-  return (potential_scale_ * frontier.min_distance *
-          costmap_->getResolution()) -
+  // min_distance is already in metres, size in cells: scale only the size, or
+  // the distance counts 1/resolution (20x at 5 cm) less than intended
+  return (potential_scale_ * frontier.min_distance) -
          (gain_scale_ * frontier.size * costmap_->getResolution());
 }
 }  // namespace frontier_exploration

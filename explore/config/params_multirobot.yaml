@@ -15,8 +15,8 @@
     potential_scale: 3.0
     orientation_scale: 0.0
     gain_scale: 1.0
-    # A frontier within coordination_radius (m) of another robot's goal is claimed
-    # by that robot and only used when every frontier is claimed.
+    # A frontier within coordination_radius (m) of another robot's goal is left to
+    # that robot. A robot whose usable frontiers are all claimed waits for one.
     coordination_radius: 2.0
     # Prefer frontiers far from the other robots' current goals. Same units as
     # potential_scale (distance to this robot): equal values weigh "far from the

@@ -50,6 +50,7 @@
 #include <map>
 #include <optional>
 #include <geometry_msgs/msg/point.hpp>
+#include <geometry_msgs/msg/point_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/color_rgba.hpp>
@@ -104,12 +105,24 @@ private:
   bool goalOnBlacklist(const geometry_msgs::msg::Point& goal);
 
   /**
-   * @brief Skip frontiers other robots are heading for (coordination_radius)
-   * and prefer frontiers far from their goals (coordination_scale)
+   * @brief Skip frontiers other robots are heading for (coordination_radius),
+   * prefer frontiers far from their goals (coordination_scale) and frontiers this
+   * robot is closer to than the others (potential_scale)
+   * @return Number of unclaimed frontiers, sorted to the front
    */
-  void applyCoordination(std::vector<frontier_exploration::Frontier>& frontiers,
-                         const geometry_msgs::msg::Point& robot);
+  size_t applyCoordination(std::vector<frontier_exploration::Frontier>& frontiers,
+                           const geometry_msgs::msg::Point& robot);
   void publishRobotGoal(const geometry_msgs::msg::Point& goal, bool active);
+  /**
+   * @brief Startup turn-taking: false while robots with a smaller name are still
+   * choosing their first frontier
+   */
+  bool waitForFirstGoals(const geometry_msgs::msg::Point& robot);
+  /**
+   * @brief Blacklist a goal for every robot: for reasons that depend on the shared
+   * map only (unreachable, or reached without revealing the frontier)
+   */
+  void blacklistForAll(const geometry_msgs::msg::Point& goal);
   /**
    * @brief True while no usable frontier has existed for less than
    * completion_timeout, i.e. exploration should not finish yet
@@ -153,6 +166,9 @@ private:
   rclcpp::Publisher<explore_lite_msgs::msg::ExploreGoal>::SharedPtr robot_goal_pub_;
   rclcpp::Subscription<explore_lite_msgs::msg::ExploreGoal>::SharedPtr robot_goals_sub_;
   std::map<std::string, explore_lite_msgs::msg::ExploreGoal> other_robot_goals_;
+  // goals blacklisted for all robots, see blacklistForAll()
+  rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr blacklist_pub_;
+  rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr blacklist_sub_;
   void resumeCallback(const std_msgs::msg::Bool::SharedPtr msg);
 
   std::vector<geometry_msgs::msg::Point> frontier_blacklist_;
@@ -171,6 +187,13 @@ private:
   double coordination_radius_;
   double completion_timeout_;
   std::optional<rclcpp::Time> no_frontier_since_;
+  // robot position at the last planning cycle, shared with the goal
+  geometry_msgs::msg::Point robot_position_;
+  // planning cycles waited at startup, -1 once started (waitForFirstGoals)
+  int startup_cycles_ = 0;
+  // where and when the robot last moved 0.25 m, for releasing its goal claim
+  geometry_msgs::msg::Point moved_from_;
+  rclcpp::Time last_moved_;
   double robot_goal_timeout_;
   double progress_timeout_;
   bool visualize_;
